@@ -9,6 +9,6 @@ export async function withApprovalGate<T>(
   try {
     return await fn(provider);
   } finally {
-    await transport.disconnect();
+    void Promise.resolve(transport.disconnect()).catch(() => {});
   }
 }
