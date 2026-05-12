@@ -164,6 +164,30 @@ export async function createProviderAdapter(): Promise<IEvmProviderAdapter> {
   return createProviderFromConfig(chains, serverUrl, privyAppId);
 }
 
+export async function createSseTransport(
+  provider: IEvmProviderAdapter
+): Promise<SseTransport> {
+  const isTestnet = process.env.IS_TESTNET === "true";
+  const serverUrl = isTestnet ? ACP_TESTNET_SERVER_URL : ACP_SERVER_URL;
+  const [agentAddress, providerSupportedChainIds] = await Promise.all([
+    provider.getAddress(),
+    provider.getSupportedChainIds(),
+  ]);
+
+  const ctx = {
+    agentAddress,
+    contractAddresses: ACP_CONTRACT_ADDRESSES,
+    providerSupportedChainIds,
+    signTypedData: (chainId, typedData) =>
+      provider.signTypedData(chainId, typedData),
+  } as Parameters<SseTransport["setContext"]>[0];
+
+  const transport = new SseTransport({ serverUrl });
+  transport.setContext(ctx);
+  await transport.connect();
+  return transport;
+}
+
 export function getWalletAddress(): string {
   const addr = getActiveWallet();
   if (!addr) {
