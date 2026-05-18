@@ -449,6 +449,19 @@ export interface SpendRequestListResponse {
   requests: SpendRequest[];
 }
 
+// One-time 3DS verification codes pushed by the card network during a
+// merchant 3DS challenge. `amount` is USD (dollars), not cents — that's
+// the upstream contract.
+export interface ThreeDSCode {
+  code: string;
+  amount: number;
+  receivedAt: string;
+}
+
+export interface ThreeDSCodesResponse {
+  codes: ThreeDSCode[];
+}
+
 export interface TokenizeResponse {
   id: number;
   name: string;
@@ -971,6 +984,14 @@ export class AgentApi {
   ): Promise<SpendRequest> {
     return this.client.get<SpendRequest>(
       `/agents/${agentId}/card/request/${requestId}`
+    );
+  }
+
+  // -- 3DS verification codes --
+
+  async cardList3DSCodes(agentId: string): Promise<ThreeDSCodesResponse> {
+    return this.client.get<ThreeDSCodesResponse>(
+      `/agents/${agentId}/card/3ds-codes`
     );
   }
 

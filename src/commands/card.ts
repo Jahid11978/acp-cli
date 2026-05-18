@@ -9,12 +9,24 @@ import type {
   CardProfileResponse,
   NextStep,
   SpendRequest,
+  ThreeDSCode,
 } from "../lib/api/agent";
 
 // ── Formatters ──────────────────────────────────────────────────────
 
 function formatCents(cents: number): string {
   return `$${(cents / 100).toFixed(2)}`;
+}
+
+// Relative age for 3DS codes — the upstream window is ~5 minutes so a
+// minute-precision label is the right grain.
+function formatAge(receivedAt: string): string {
+  const ts = new Date(receivedAt).getTime();
+  if (!Number.isFinite(ts)) return "";
+  const seconds = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+  if (seconds < 10) return "just now";
+  if (seconds < 60) return `${seconds}s ago`;
+  return `${Math.floor(seconds / 60)}m ago`;
 }
 
 // nextStep is the server's authoritative hint for what to do next. Always
@@ -520,6 +532,62 @@ export function registerCardCommands(program: Command): void {
         } else {
           printSpendRequest(result);
         }
+      } catch (err) {
+        outputError(json, err instanceof Error ? err : String(err));
+      }
+    });
+
+  // -- 3DS verification codes --
+  //
+  // When a merchant runs a 3DS challenge against an issued card, the
+  // verification code lands at agentcard.ai; agents poll this command to
+  // read it back to checkout. Window is ~5 minutes.
+
+  card
+    .command("3ds")
+    .description(
+      "List recent 3DS verification codes (for merchant challenges; ~5 min window)"
+    )
+    .action(async (_opts, cmd) => {
+      const { agentApi } = await getClient();
+      const json = isJson(cmd);
+      const agentId = getActiveAgentId(json);
+      if (!agentId) return;
+
+      try {
+        const result = await agentApi.cardList3DSCodes(agentId);
+
+        if (json) {
+          outputResult(json, result as unknown as Record<string, unknown>);
+          return;
+        }
+
+        if (result.codes.length === 0) {
+          console.log("No recent 3DS codes.");
+          console.log(
+            c.dim(
+              "  Make sure checkout requested a 3DS challenge. Codes usually appear here within a few seconds."
+            )
+          );
+          return;
+        }
+
+        // Compact per-row layout. printTable is 2-col only and we want
+        // code / amount / age side-by-side without the label gutter.
+        const codeWidth = Math.max(
+          ...result.codes.map((code: ThreeDSCode) => code.code.length)
+        );
+        for (const item of result.codes) {
+          const amount = `USD ${item.amount.toFixed(2)}`;
+          console.log(
+            `  ${c.bold(item.code.padEnd(codeWidth))}   ${c.green(amount.padEnd(10))} ${c.dim(formatAge(item.receivedAt))}`
+          );
+        }
+        console.log(
+          c.dim(
+            "\nNo match? Re-run `acp card 3ds` after checkout sends the challenge."
+          )
+        );
       } catch (err) {
         outputError(json, err instanceof Error ? err : String(err));
       }

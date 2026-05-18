@@ -1,6 +1,6 @@
 {
   "name": "@virtuals-protocol/acp-cli",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "type": "module",
   "bin": {
     "acp": "./dist/bin/acp.js"
@@ -14,8 +14,10 @@
   ],
   "scripts": {
     "acp": "tsx bin/acp.ts",
-    "build": "esbuild bin/acp.ts --bundle --platform=node --format=esm --target=node18 --outfile=dist/bin/acp.js --packages=external",
+    "clean": "node -e \"require('fs').rmSync('dist', { recursive: true, force: true })\"",
+    "build": "npm run clean && esbuild bin/acp.ts --bundle --platform=node --format=esm --target=node18 --outfile=dist/bin/acp.js --packages=external",
     "typecheck": "tsc --noEmit",
+    "prepack": "npm run build",
     "prepublishOnly": "npm run typecheck && npm run build"
   },
   "engines": {
@@ -59,7 +61,7 @@
   "devDependencies": {
     "@types/node": "^22.0.0",
     "@types/qrcode-terminal": "^0.12.2",
-    "esbuild": "^0.28.0",
+    "esbuild": "0.27.7",
     "tsx": "^4.19.0",
     "typescript": "^5.9.3"
   }
