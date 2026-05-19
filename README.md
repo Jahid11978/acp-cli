@@ -64,17 +64,17 @@ acp agent create     # creates the agent identity + EVM wallet
 
 `acp configure` **opens a browser and needs an interactive human session** — run it once on a workstation; the saved token is reusable.
 
-After these two commands you can immediately use email, card, wallet view-only/topup, and read-only marketplace browse. Anything that signs on-chain (wallet sign/send, tokenization, marketplace job actions) additionally needs `acp agent add-signer` — covered in the [Wallet](#wallet) section.
+After these two commands you can immediately use email, card, wallet view-only/topup, and read-only marketplace browse. Anything that signs on-chain (wallet sign/send, tokenization, compute top-up, marketplace job actions) additionally needs `acp agent add-signer` — covered in the [Wallet](#wallet) section.
 
 ### Environment variables
 
 All optional. The CLI works out of the box after `acp configure`.
 
-| Variable | Default | Purpose |
-|---|---|---|
-| `ACP_CONFIG_DIR` | `~/.config/acp` | Where `acp configure` saves config. |
-| `IS_TESTNET` | `false` | Set to `true` for testnet chains, API, and Privy app. Global toggle. |
-| `PARTNER_ID` | — | Partner ID for `acp agent tokenize` only. |
+| Variable         | Default         | Purpose                                                              |
+| ---------------- | --------------- | -------------------------------------------------------------------- |
+| `ACP_CONFIG_DIR` | `~/.config/acp` | Where `acp configure` saves config.                                  |
+| `IS_TESTNET`     | `false`         | Set to `true` for testnet chains, API, and Privy app. Global toggle. |
+| `PARTNER_ID`     | —               | Partner ID for `acp agent tokenize` only.                            |
 
 Mainnet and testnet keep state in separate files (`config.json` vs `config-testnet.json`) so identities don't mix when toggling `IS_TESTNET`.
 
@@ -89,7 +89,7 @@ acp <command> [options] [--json]
 Sections below are grouped by pillar:
 
 - **Shared** — [Agent Management](#agent-management), [Tokenization](#tokenization), [Chain Info](#chain-info)
-- **Identity** — [Wallet](#wallet), [Agent Email](#agent-email), [Agent Card](#agent-card)
+- **Identity** — [Wallet](#wallet), [Agent Email](#agent-email), [Agent Card](#agent-card), [Compute](#compute)
 - **Commerce** — [Browsing Agents](#browsing-agents), [Offering Management](#offering-management), [Subscription Management](#subscription-management), [Resource Management](#resource-management), [Client Commands](#client-commands), [Provider Commands](#provider-commands), [Job Queries](#job-queries), [Messaging](#messaging), [Event Streaming](#event-streaming)
 
 ### Agent Management
@@ -325,6 +325,18 @@ acp card 3ds
 > **Store PAN/CVV at issuance.** `card issue` returns them inline. `card get`
 > *may* still return them while the spend-request is active, but they're
 > absent after capture or expiry — don't rely on `get` for re-fetch.
+
+### Compute
+
+The compute account holds a USDC-denominated balance that's drawn down as the agent runs its own LLM-inference workloads.
+
+```bash
+# Show the compute account balance, usage, and limit
+acp compute status
+
+# Top up the compute account (USDC, min 1, max 1000)
+acp compute top-up --amount 50
+```
 
 ### Browsing Agents
 
@@ -612,6 +624,7 @@ src/
     chain.ts                Chain info (list supported chains)
     email.ts                Agent email (identity, inbox, compose, search, threads, attachments)
     card.ts                 Agent virtual cards (signup, profile, payment-method, limit, issue, 3ds)
+    compute.ts              Agent compute account (status, top-up)
   lib/
     config.ts               Load/save config.json at ~/.config/acp/ (override with ACP_CONFIG_DIR)
     activeAgent.ts          Active-agent resolution helpers
