@@ -462,6 +462,32 @@ export interface ThreeDSCodesResponse {
   codes: ThreeDSCode[];
 }
 
+// ── Compute types ───────────────────────────────────────────────────
+
+export interface ComputeAccount {
+  limit: number;
+  limitRemaining: number;
+  usage: number;
+  preferredModel: string;
+  autoTopUpThreshold: number;
+  autoTopUpEnabled: boolean;
+  autoTopUpAmount: number;
+  fallbackModel: string | null;
+  fallbackModelThreshold: number;
+  hasComputeAutoBilling?: boolean;
+  preferredBillingChainId?: number;
+}
+
+export interface ComputeTopUpResponse {
+  data?: ComputeAccount | Record<string, unknown>;
+  message?: string;
+}
+
+export interface ComputeFeeResponse {
+  walletAddress: string;
+  feeBps: number;
+}
+
 export interface TokenizeResponse {
   id: number;
   name: string;
@@ -992,6 +1018,34 @@ export class AgentApi {
   async cardList3DSCodes(agentId: string): Promise<ThreeDSCodesResponse> {
     return this.client.get<ThreeDSCodesResponse>(
       `/agents/${agentId}/card/3ds-codes`
+    );
+  }
+
+  // ── Compute methods ─────────────────────────────────────────────
+
+  async getComputeAccount(agentId: string): Promise<ComputeAccount> {
+    const res = await this.client.get<{ data: ComputeAccount }>(
+      `/agents/${agentId}/compute/account`
+    );
+    return res.data;
+  }
+
+  async getComputeFeeData(): Promise<ComputeFeeResponse> {
+    const res = await this.client.get<{
+      data: ComputeFeeResponse;
+    }>(`/common/compute-fee`);
+    return res.data;
+  }
+
+  async computeTopUp(
+    agentId: string,
+    agentAddress: string,
+    amount: number,
+    txnHash: string
+  ): Promise<ComputeTopUpResponse> {
+    return this.client.post<ComputeTopUpResponse>(
+      `/agents/${agentId}/compute/top-up`,
+      { amount, txnHash }
     );
   }
 
