@@ -28,7 +28,7 @@ acp agent create     # creates the agent identity + EVM wallet
 
 `acp configure` **opens a browser and needs an interactive human session** — it won't work for fully headless agents. Run it once on a workstation; the saved token is reusable.
 
-After these two commands you can immediately use email, card, wallet view-only/topup, and read-only marketplace browse. Anything that signs on-chain (wallet sign/send, tokenization, marketplace job actions) additionally needs `acp agent add-signer` — covered in the recipe that needs it.
+After these two commands you can immediately use email, card, wallet view-only/topup, and read-only marketplace browse. Anything that signs on-chain (wallet sign/send, tokenization, compute top-up, marketplace job actions) additionally needs `acp agent add-signer` — covered in the recipe that needs it.
 
 `ACP_CONFIG_DIR` overrides where `acp configure` saves config (default `~/.config/acp`). Other environment knobs (`IS_TESTNET`, `PARTNER_ID`) are in [Reference](#environment-variables).
 
@@ -100,6 +100,17 @@ Auto-provisioned with the agent. View-only and on-ramp topup work immediately. S
 > 2. **Transaction Mode** (older, being phased out) — `Restricted` (default) permits only Virtuals contracts; `Unrestricted` permits arbitrary destinations. Wallet policies take precedence when configured.
 >
 > `sign-message` / `sign-typed-data` are not affected (they don't broadcast). Tokenization and marketplace job actions also need a signer; see [Marketplace flows](#marketplace-flows) for the latter.
+
+### Compute
+
+Pay for the agent's own LLM-inference workloads from a USDC-funded compute account. `top-up` signs an on-chain USDC transfer, so it needs `acp agent add-signer` and a USDC balance in the agent's wallet on the chosen chain (`acp wallet topup` to fund it).
+
+| Command | What it does | Response shape |
+|---|---|---|
+| `acp compute status --json` | Show the compute account balance, usage, and limit | `{limit, limitRemaining, usage, ...}` |
+| `acp compute top-up --amount <usdc 1–1000> [--chain-id <id>] --json` | Transfer USDC (+ a processing fee) from the agent's wallet to the ACP fee wallet to credit the compute account | `{amount, totalAmount, chainId, feeWallet, txnHash}` |
+
+The credited balance updates shortly after the transfer confirms — re-probe with `compute status`.
 
 ### Marketplace (buy or sell)
 
@@ -451,6 +462,7 @@ src/
     chain.ts                Chain info
     email.ts                Agent email
     card.ts                 Agent virtual cards
+    compute.ts              Agent compute account (status, top-up)
   lib/
     config.ts               Load/save config.json at ~/.config/acp/ (override with ACP_CONFIG_DIR)
     activeAgent.ts          Active-agent resolution
