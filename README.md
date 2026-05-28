@@ -248,8 +248,6 @@ for architecture, anti-spam policy, and rate limits.
 acp email whoami
 
 # Provision a new email identity for the active agent
-# (local part is auto-generated from the agent name; a random suffix
-# is appended if the derived name is already taken)
 acp email provision
 
 # View inbox messages
