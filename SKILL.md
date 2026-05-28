@@ -34,7 +34,7 @@ Use the split `acp auth` flow so nothing blocks for 5 minutes on your end:
 
 1. Run `acp auth url --json` → returns `{url, requestId}` and exits immediately. No browser opens, no polling.
 2. Show the `url` to the human and ask them to sign in (one click in their browser).
-3. When the human confirms they've signed in, run `acp auth complete --request-id <id> --json` to finalize. This polls (up to 5 min) and saves tokens to the OS keychain.
+3. Poll `acp auth complete --request-id <id> --json` every ~2–3s. Each call is a single non-blocking probe that returns `{done: false}` (try again) or `{done: true, walletAddress}` (tokens saved to OS keychain). Cap retries at ~5 min; if still not done, re-run `acp auth url` and start over.
 
 `acp configure` still exists for humans on a workstation — it opens a browser and blocks until sign-in completes. Agents should prefer `acp auth url` + `acp auth complete`.
 
@@ -422,7 +422,7 @@ Most commands print structured JSON errors to stderr on `--json`:
 
 | Code | Meaning | Recovery |
 |---|---|---|
-| `NOT_AUTHENTICATED` | No token or session expired | `acp auth url` → hand URL to human → `acp auth complete --request-id <id>` (agents); `acp configure` (humans on a workstation) |
+| `NOT_AUTHENTICATED` | No token or session expired | `acp auth url` → hand URL to human → poll `acp auth complete --request-id <id>` every ~2–3s until `done: true` (agents); `acp configure` (humans on a workstation) |
 | `NO_ACTIVE_AGENT` | No active agent set | `acp agent use` or `acp agent list` |
 | `NO_SIGNER` | No signing key, or key missing from keychain | `acp agent add-signer` |
 | `SESSION_NOT_FOUND` | Job ID doesn't exist or wallet isn't a participant | `acp job list` to verify |
@@ -460,7 +460,7 @@ bin/acp-cli-signer-*        Platform signer binaries (linux/macos/windows)
 src/
   commands/
     configure.ts            Browser-based auth flow; saves token to OS keychain
-    auth.ts                 Split auth flow for agents: `acp auth url` + `acp auth complete`
+    auth.ts                 Split auth flow for agents: `acp auth url` + non-blocking poll `acp auth complete`
     agent.ts                Agent management (create, list, use, whoami, add-signer, update, tokenize, migrate, register-erc8004)
     offering.ts             Offering management (list, create, update, delete; subscription attachments)
     subscription.ts         Subscription management

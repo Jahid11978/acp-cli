@@ -1,40 +1,18 @@
 import type { Command } from "commander";
 import { isJson, outputResult, outputError } from "../lib/output";
-import { CliError } from "../lib/errors";
-import { AuthApi } from "../lib/api/auth";
 import { getClient } from "../lib/api/client";
 import { setCurrentOwnerWallet, setTokens } from "../lib/config";
-
-const POLL_INTERVAL_MS = 2000;
-const POLL_TIMEOUT_MS = 5 * 60 * 1000;
-
-async function waitForToken(
-  authApi: AuthApi,
-  requestId: string
-): Promise<{
-  token: string;
-  refreshToken: string;
-  walletAddress: string;
-} | null> {
-  const deadline = Date.now() + POLL_TIMEOUT_MS;
-  while (Date.now() < deadline) {
-    await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
-    const result = await authApi.pollCliToken(requestId);
-    if (result) return result;
-  }
-  return null;
-}
 
 export function registerAuthCommands(program: Command): void {
   const auth = program
     .command("auth")
     .description(
-      "Agent-friendly authentication. `acp auth url` returns a URL and exits; `acp auth complete` finalizes after the human signs in."
+      "Agent-friendly authentication. `acp auth url` returns a URL and exits; `acp auth complete` is a single non-blocking probe — call repeatedly until done."
     );
 
   // URL — emits {url, requestId} and exits immediately. Designed for agent
   // harnesses that can't (or won't) sit on a blocking browser flow: the
-  // agent runs this, relays the URL to its human, then calls `complete`.
+  // agent runs this, relays the URL to its human, then polls `complete`.
   auth
     .command("url")
     .description(
@@ -49,7 +27,9 @@ export function registerAuthCommands(program: Command): void {
           outputResult(json, { url, requestId });
         } else {
           console.log(`\nSign in here:\n\n  ${url}\n`);
-          console.log(`Then run:\n  acp auth complete --request-id ${requestId}\n`);
+          console.log(
+            `Then poll:\n  acp auth complete --request-id ${requestId}\n`
+          );
         }
       } catch (err) {
         outputError(
@@ -59,12 +39,14 @@ export function registerAuthCommands(program: Command): void {
       }
     });
 
-  // COMPLETE — blocks polling for a previously-issued requestId. Run this
-  // *after* the human has clicked through the URL from `acp auth url`.
+  // COMPLETE — single non-blocking probe. The caller (typically an agent)
+  // is expected to poll this every few seconds until `done: true`. We
+  // don't block here so harnesses that timeout long calls don't kill the
+  // flow.
   auth
     .command("complete")
     .description(
-      "Poll until the human finishes the sign-in for a requestId from `acp auth url`, then save tokens."
+      "Probe once whether the human has finished signing in. Returns {done, walletAddress?} and saves tokens when done. Non-blocking — call repeatedly."
     )
     .requiredOption("--request-id <id>", "Request ID returned by `acp auth url`")
     .action(async (opts, cmd) => {
@@ -72,27 +54,26 @@ export function registerAuthCommands(program: Command): void {
       const requestId: string = opts.requestId;
       try {
         const { authApi } = await getClient(true);
-        const result = await waitForToken(authApi, requestId);
+        const result = await authApi.pollCliToken(requestId);
         if (!result) {
-          outputError(
-            json,
-            new CliError(
-              "Authentication timed out.",
-              "TIMEOUT",
-              "Run `acp auth url` again and complete the browser sign-in."
-            )
-          );
+          if (json) {
+            outputResult(json, { done: false });
+          } else {
+            console.log("Not signed in yet — try again in a few seconds.");
+          }
           return;
         }
         setCurrentOwnerWallet(result.walletAddress);
         await setTokens(result.token, result.refreshToken, result.walletAddress);
         if (json) {
           outputResult(json, {
-            message: "Successfully authenticated to ACP CLI",
+            done: true,
             walletAddress: result.walletAddress,
           });
         } else {
-          console.log("Successfully authenticated to ACP CLI");
+          console.log(
+            `Successfully authenticated to ACP CLI as ${result.walletAddress}`
+          );
         }
       } catch (err) {
         outputError(json, err instanceof Error ? err : String(err));
