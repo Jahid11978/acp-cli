@@ -37,7 +37,7 @@ How `acp configure --json` behaves:
 
 If your runtime can't tolerate a long-running command, stream stdout line-by-line: the URL appears on the first JSON line so you can relay it the moment it's printed, even though the process is still alive.
 
-For fully non-interactive contexts (CI, prebuilt environments), pass `--token`, `--refresh-token`, and `--wallet` to `acp configure` (or set `ACP_ACCESS_TOKEN` / `ACP_REFRESH_TOKEN` / `ACP_OWNER_WALLET`) — no browser flow at all.
+> The `--token / --refresh-token / --wallet` flags (and matching `ACP_*` env vars) on `acp configure` are **not** an escape hatch for agents — they only work with tokens minted by a Virtuals partner backend, used to pre-bake the CLI onto end-user machines. See [docs/headless-deployment.md](docs/headless-deployment.md) if that's what you're doing.
 
 After auth + `acp agent create` you can immediately use email, card, wallet view-only/topup, and read-only marketplace browse. Anything that signs on-chain (wallet sign/send, tokenization, compute top-up, marketplace job actions) additionally needs `acp agent add-signer` — covered in the recipe that needs it.
 
