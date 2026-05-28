@@ -28,17 +28,16 @@ acp agent create     # creates the agent identity + EVM wallet
 
 ### Authenticating from an agent (don't punt this to the human)
 
-**You — the agent — run these commands yourself.** Do not tell the human to "run `acp configure`." All you need from the human is one click on a URL you give them.
+**You — the agent — run `acp configure` yourself.** Do not tell the human to "run `acp configure`." All you need from the human is one click on a URL you give them.
 
-Use the split `acp auth` flow so nothing blocks for 5 minutes on your end:
+How `acp configure --json` behaves:
 
-1. Run `acp auth url --json` → returns `{url, requestId}` and exits immediately. No browser opens, no polling.
-2. Show the `url` to the human and ask them to sign in (one click in their browser).
-3. Poll `acp auth complete --request-id <id> --json` every ~2–3s. Each call is a single non-blocking probe that returns `{done: false}` (try again) or `{done: true, walletAddress}` (tokens saved to OS keychain). Cap retries at ~5 min; if still not done, re-run `acp auth url` and start over.
+1. It prints `{"url":"..."}` to stdout almost immediately. **Relay this URL to the human** — that's the one thing you need them to do (one click, sign in).
+2. The command then waits (up to ~5 min) until the human finishes the sign-in, then prints the final `{"message":"...","walletAddress":"..."}` and exits 0. Tokens are saved to the OS keychain.
 
-`acp configure` still exists for humans on a workstation — it opens a browser and blocks until sign-in completes. Agents should prefer `acp auth url` + `acp auth complete`.
+If your runtime can't tolerate a long-running command, stream stdout line-by-line: the URL appears on the first JSON line so you can relay it the moment it's printed, even though the process is still alive.
 
-For fully non-interactive contexts (CI, scripts), pass `--token`, `--refresh-token`, and `--wallet` to `acp configure` (or set `ACP_ACCESS_TOKEN` / `ACP_REFRESH_TOKEN` / `ACP_OWNER_WALLET`).
+For fully non-interactive contexts (CI, prebuilt environments), pass `--token`, `--refresh-token`, and `--wallet` to `acp configure` (or set `ACP_ACCESS_TOKEN` / `ACP_REFRESH_TOKEN` / `ACP_OWNER_WALLET`) — no browser flow at all.
 
 After auth + `acp agent create` you can immediately use email, card, wallet view-only/topup, and read-only marketplace browse. Anything that signs on-chain (wallet sign/send, tokenization, compute top-up, marketplace job actions) additionally needs `acp agent add-signer` — covered in the recipe that needs it.
 
@@ -422,7 +421,7 @@ Most commands print structured JSON errors to stderr on `--json`:
 
 | Code | Meaning | Recovery |
 |---|---|---|
-| `NOT_AUTHENTICATED` | No token or session expired | `acp auth url` → hand URL to human → poll `acp auth complete --request-id <id>` every ~2–3s until `done: true` (agents); `acp configure` (humans on a workstation) |
+| `NOT_AUTHENTICATED` | No token or session expired | Run `acp configure` yourself (don't push to the human); relay the printed URL to the human for the sign-in click |
 | `NO_ACTIVE_AGENT` | No active agent set | `acp agent use` or `acp agent list` |
 | `NO_SIGNER` | No signing key, or key missing from keychain | `acp agent add-signer` |
 | `SESSION_NOT_FOUND` | Job ID doesn't exist or wallet isn't a participant | `acp job list` to verify |
@@ -460,7 +459,6 @@ bin/acp-cli-signer-*        Platform signer binaries (linux/macos/windows)
 src/
   commands/
     configure.ts            Browser-based auth flow; saves token to OS keychain
-    auth.ts                 Split auth flow for agents: `acp auth url` + non-blocking poll `acp auth complete`
     agent.ts                Agent management (create, list, use, whoami, add-signer, update, tokenize, migrate, register-erc8004)
     offering.ts             Offering management (list, create, update, delete; subscription attachments)
     subscription.ts         Subscription management
