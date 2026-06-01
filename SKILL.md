@@ -26,11 +26,20 @@ acp configure        # one-time browser OAuth; token saved to OS keychain
 acp agent create     # creates the agent identity + EVM wallet
 ```
 
-`acp configure` **opens a browser and needs an interactive human session** — it won't work for fully headless agents. Run it once on a workstation; the saved token is reusable.
+### Authenticating from an agent (don't punt this to the human)
 
-After these two commands you can immediately use email, card, wallet view-only/topup, and read-only marketplace browse. Anything that signs on-chain (wallet sign/send, tokenization, compute top-up, marketplace job actions) additionally needs `acp agent add-signer` — covered in the recipe that needs it.
+**You — the agent — run `acp configure` yourself.** Do not tell the human to "run `acp configure`." All you need from the human is one click on a URL you give them.
 
-`ACP_CONFIG_DIR` overrides where `acp configure` saves config (default `~/.config/acp`). Other environment knobs (`IS_TESTNET`, `PARTNER_ID`) are in [Reference](#environment-variables).
+How `acp configure --json` behaves:
+
+1. It prints `{"url":"..."}` to stdout almost immediately. **Relay this URL to the human** — that's the one thing you need them to do (one click, sign in).
+2. The command then waits (up to ~5 min) until the human finishes the sign-in, then prints the final `{"message":"...","walletAddress":"..."}` and exits 0. Tokens are saved to the OS keychain.
+
+If your runtime can't tolerate a long-running command, stream stdout line-by-line: the URL appears on the first JSON line so you can relay it the moment it's printed, even though the process is still alive.
+
+After auth + `acp agent create` you can immediately use email, card, wallet view-only/topup, and read-only marketplace browse. Anything that signs on-chain (wallet sign/send, tokenization, compute top-up, marketplace job actions) additionally needs `acp agent add-signer` — covered in the recipe that needs it.
+
+`ACP_CONFIG_DIR` overrides where the saved config lives (default `~/.config/acp`). Other environment knobs (`IS_TESTNET`, `PARTNER_ID`) are in [Reference](#environment-variables).
 
 ## Recipes
 
@@ -410,7 +419,7 @@ Most commands print structured JSON errors to stderr on `--json`:
 
 | Code | Meaning | Recovery |
 |---|---|---|
-| `NOT_AUTHENTICATED` | No token or session expired | `acp configure` |
+| `NOT_AUTHENTICATED` | No token or session expired | Run `acp configure` yourself (don't push to the human); relay the printed URL to the human for the sign-in click |
 | `NO_ACTIVE_AGENT` | No active agent set | `acp agent use` or `acp agent list` |
 | `NO_SIGNER` | No signing key, or key missing from keychain | `acp agent add-signer` |
 | `SESSION_NOT_FOUND` | Job ID doesn't exist or wallet isn't a participant | `acp job list` to verify |
