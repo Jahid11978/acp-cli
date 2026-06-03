@@ -2,12 +2,12 @@ import type { Command } from "commander";
 import * as readline from "readline";
 import { formatUnits, isAddress, isHex } from "viem";
 import { isJson, outputResult, outputError, isTTY } from "../lib/output";
-import { getWalletAddress, createProviderAdapter } from "../lib/agentFactory";
+import { getWalletAddress } from "../lib/agentFactory";
 import { getClient } from "../lib/api/client";
 import { getAgentId, getActiveWallet } from "../lib/config";
 import { CHAIN_NETWORK_MAP } from "../lib/api/agent";
 import { CliError } from "../lib/errors";
-import { formatChainId, formatChainIds } from "../lib/chains";
+import { assertSponsoredChainId } from "../lib/chains";
 import { c } from "../lib/color";
 import { openBrowser } from "../lib/browser";
 import { selectOption, prompt } from "../lib/prompt";
@@ -149,21 +149,15 @@ export function registerWalletCommands(program: Command): void {
           }
         }
 
-        const transactionHash = await withApprovalGate(async (provider) => {
-          const supportedChainIds = await provider.getSupportedChainIds();
-          if (!supportedChainIds.includes(chainId)) {
-            throw new CliError(
-              `Unsupported chain ID: ${formatChainId(chainId)}`,
-              "VALIDATION_ERROR",
-              `Supported chains: ${formatChainIds(supportedChainIds)}`
-            );
-          }
-          return provider.sendTransaction(chainId, {
+        assertSponsoredChainId(chainId);
+
+        const transactionHash = await withApprovalGate((provider) =>
+          provider.sendTransaction(chainId, {
             to: opts.to,
             ...(opts.data !== undefined ? { data: opts.data } : {}),
             ...(value !== undefined ? { value } : {}),
-          });
-        });
+          })
+        );
         outputResult(json, { transactionHash });
       } catch (err) {
         outputError(json, err instanceof Error ? err : String(err));
@@ -178,16 +172,7 @@ export function registerWalletCommands(program: Command): void {
       const json = isJson(cmd);
       try {
         const chainId = Number(opts.chainId);
-
-        const provider = await createProviderAdapter();
-        const supportedChainIds = await provider.getSupportedChainIds();
-        if (!supportedChainIds.includes(chainId)) {
-          throw new CliError(
-            `Unsupported chain ID: ${formatChainId(chainId)}`,
-            "VALIDATION_ERROR",
-            `Supported chains: ${formatChainIds(supportedChainIds)}`
-          );
-        }
+        assertSponsoredChainId(chainId);
 
         const network = CHAIN_NETWORK_MAP[chainId];
         if (!network) {
@@ -292,16 +277,8 @@ export function registerWalletCommands(program: Command): void {
       try {
         const walletAddress = getWalletAddress();
         const chainId = Number(opts.chainId);
+        assertSponsoredChainId(chainId);
 
-        const provider = await createProviderAdapter();
-        const supportedChainIds = await provider.getSupportedChainIds();
-        if (!supportedChainIds.includes(chainId)) {
-          throw new CliError(
-            `Unsupported chain ID: ${formatChainId(chainId)}`,
-            "VALIDATION_ERROR",
-            `Supported chains: ${formatChainIds(supportedChainIds)}`
-          );
-        }
         const { agentApi } = await getClient();
 
         // Determine payment method
