@@ -11,6 +11,7 @@ import { formatChainId, formatChainIds } from "../lib/chains";
 import { c } from "../lib/color";
 import { openBrowser } from "../lib/browser";
 import { selectOption, prompt } from "../lib/prompt";
+import { withApprovalGate } from "../lib/walletGate";
 import qrcode from "qrcode-terminal";
 
 // In --json mode the funding URL goes to stdout as JSON for machine parsing,
@@ -48,10 +49,8 @@ export function registerWalletCommands(program: Command): void {
     .action(async (opts, cmd) => {
       const json = isJson(cmd);
       try {
-        const provider = await createProviderAdapter();
-        const signature = await provider.signMessage(
-          Number(opts.chainId),
-          opts.message
+        const signature = await withApprovalGate((provider) =>
+          provider.signMessage(Number(opts.chainId), opts.message)
         );
         outputResult(json, { signature });
       } catch (err) {
@@ -93,10 +92,8 @@ export function registerWalletCommands(program: Command): void {
           );
         }
 
-        const provider = await createProviderAdapter();
-        const signature = await provider.signTypedData(
-          Number(opts.chainId),
-          typedData
+        const signature = await withApprovalGate((provider) =>
+          provider.signTypedData(Number(opts.chainId), typedData)
         );
         outputResult(json, { signature });
       } catch (err) {
@@ -120,16 +117,6 @@ export function registerWalletCommands(program: Command): void {
             `Invalid chain ID: ${opts.chainId}`,
             "VALIDATION_ERROR",
             "Pass a numeric chain ID, e.g. --chain-id 8453."
-          );
-        }
-
-        const provider = await createProviderAdapter();
-        const supportedChainIds = await provider.getSupportedChainIds();
-        if (!supportedChainIds.includes(chainId)) {
-          throw new CliError(
-            `Unsupported chain ID: ${formatChainId(chainId)}`,
-            "VALIDATION_ERROR",
-            `Supported chains: ${formatChainIds(supportedChainIds)}`
           );
         }
 
@@ -162,10 +149,20 @@ export function registerWalletCommands(program: Command): void {
           }
         }
 
-        const transactionHash = await provider.sendTransaction(chainId, {
-          to: opts.to,
-          ...(opts.data !== undefined ? { data: opts.data } : {}),
-          ...(value !== undefined ? { value } : {}),
+        const transactionHash = await withApprovalGate(async (provider) => {
+          const supportedChainIds = await provider.getSupportedChainIds();
+          if (!supportedChainIds.includes(chainId)) {
+            throw new CliError(
+              `Unsupported chain ID: ${formatChainId(chainId)}`,
+              "VALIDATION_ERROR",
+              `Supported chains: ${formatChainIds(supportedChainIds)}`
+            );
+          }
+          return provider.sendTransaction(chainId, {
+            to: opts.to,
+            ...(opts.data !== undefined ? { data: opts.data } : {}),
+            ...(value !== undefined ? { value } : {}),
+          });
         });
         outputResult(json, { transactionHash });
       } catch (err) {
@@ -381,9 +378,9 @@ export function registerWalletCommands(program: Command): void {
             if (!json && isTTY()) {
               process.stdout.write("  Signing wallet verification...");
             }
-            signature = await provider.signMessage(
-              chainId,
-              initResult.data.challenge
+            const challenge = initResult.data.challenge;
+            signature = await withApprovalGate((p) =>
+              p.signMessage(chainId, challenge)
             );
             if (!json && isTTY()) {
               console.log(` ${c.green("✓")}`);

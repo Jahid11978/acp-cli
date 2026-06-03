@@ -11,7 +11,10 @@ import {
   SseTransport,
   AcpApiClient,
 } from "@virtuals-protocol/acp-node-v2";
-import type { IEvmProviderAdapter } from "@virtuals-protocol/acp-node-v2";
+import type {
+  IEvmProviderAdapter,
+  SupportedStreams,
+} from "@virtuals-protocol/acp-node-v2";
 import {
   getBuilderCode,
   getActiveWallet,
@@ -162,6 +165,31 @@ export async function createProviderAdapter(): Promise<IEvmProviderAdapter> {
   const serverUrl = isTestnet ? ACP_TESTNET_SERVER_URL : ACP_SERVER_URL;
   const privyAppId = isTestnet ? TESTNET_PRIVY_APP_ID : PRIVY_APP_ID;
   return createProviderFromConfig(chains, serverUrl, privyAppId);
+}
+
+export async function createSseTransport(
+  provider: IEvmProviderAdapter,
+  streams: SupportedStreams[]
+): Promise<SseTransport> {
+  const isTestnet = process.env.IS_TESTNET === "true";
+  const serverUrl = isTestnet ? ACP_TESTNET_SERVER_URL : ACP_SERVER_URL;
+  const [agentAddress, providerSupportedChainIds] = await Promise.all([
+    provider.getAddress(),
+    provider.getSupportedChainIds(),
+  ]);
+
+  const ctx = {
+    agentAddress,
+    contractAddresses: ACP_CONTRACT_ADDRESSES,
+    providerSupportedChainIds,
+    signTypedData: (chainId, typedData) =>
+      provider.signTypedData(chainId, typedData),
+  } as Parameters<SseTransport["setContext"]>[0];
+
+  const transport = new SseTransport({ serverUrl });
+  transport.setContext(ctx);
+  await transport.connect(undefined, streams);
+  return transport;
 }
 
 export function getWalletAddress(): string {
