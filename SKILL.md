@@ -175,7 +175,7 @@ Quick pointers:
 
 | Command | What it does |
 |---|---|
-| `acp agent create --name <n> --description <d> [--image <url>] [--signer --policy <restricted\|deny-all\|unrestricted>]` | Create a new agent + wallet. **Non-interactively, pass `--name` + `--description` (both required) and `--json`; `--image` is OPTIONAL — just omit it.** Don't run the bare form in an agent harness: with no TTY it can't prompt and will error for missing name/description. `--signer` auto-sets up a signer after creation; `--policy` (default `restricted`) sets that signer's authorization policy. |
+| `acp agent create --name <n> --description <d> [--image <url>] [--signer --policy <restricted\|deny-all\|unrestricted>]` | Create a new agent + wallet. **Non-interactively, pass `--name` + `--description` (both required) and `--json`; `--image` is OPTIONAL — just omit it.** Don't run the bare form in an agent harness: with no TTY it can't prompt and will error for missing name/description. `--signer` auto-sets up a signer after creation; `--policy` (default `restricted`) sets that signer's authorization policy. Interactively, the signer step prompts for the policy; passing `--policy` skips that picker. |
 | `acp agent list [--page --page-size]` | List your agents |
 | `acp agent use [--agent-id]` | Switch active agent |
 | `acp agent whoami --json` | Show details of the active agent (per-chain tokenization status, ERC-8004 IDs, offerings, resources) |

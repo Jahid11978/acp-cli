@@ -119,6 +119,12 @@ async function resolveAgent(
 const SIGNER_POLL_INTERVAL_MS = 5_000;
 const SIGNER_TIMEOUT_MS = 5 * 60 * 1_000;
 
+const SIGNER_POLICY_DESCRIPTIONS: Record<SignerPolicy, string> = {
+  restricted: "authorize for all ACP transactions",
+  "deny-all": "manual approval for all transactions",
+  unrestricted: "no approval required",
+};
+
 // Step 1 of the signer flow: generate a local P-256 keypair (private key stays
 // in the native keystore) and obtain the browser approval URL + requestId.
 // Returns null on failure (error already emitted).
@@ -397,10 +403,10 @@ export function registerAgentCommands(program: Command): void {
       "restricted"
     )
     .action(async (opts, cmd) => {
-      const { agentApi } = await getClient();
       const json = isJson(cmd);
 
-      const policy = String(opts.policy) as SignerPolicy;
+      let policy = String(opts.policy) as SignerPolicy;
+      const policyFromCli = cmd.getOptionValueSource("policy") === "cli";
       if (!SIGNER_POLICIES.includes(policy)) {
         outputError(
           json,
@@ -412,6 +418,8 @@ export function registerAgentCommands(program: Command): void {
         );
         return;
       }
+
+      const { agentApi } = await getClient();
 
       let name: string = opts.name?.trim() ?? "";
       let description: string = opts.description?.trim() ?? "";
@@ -575,6 +583,14 @@ export function registerAgentCommands(program: Command): void {
 
       if (!setupSigner) {
         return;
+      }
+
+      if (!policyFromCli && isTTY()) {
+        policy = await selectOption(
+          "\nSelect the signer's policy:",
+          SIGNER_POLICIES,
+          (p) => `${p} — ${SIGNER_POLICY_DESCRIPTIONS[p]}`
+        );
       }
 
       const signerOk = await runAddSignerFlow(agentApi, json, created, policy);

@@ -106,11 +106,13 @@ Sections below are grouped by pillar:
 
 ```bash
 # Create a new agent (interactive)
+# When you opt to set up a signer, you'll be prompted to pick its
+# authorization policy (restricted / deny-all / unrestricted — see add-signer).
 acp agent create
 # Or non-interactive with flags
 acp agent create --name "MyAgent" --description "Does things" --image "https://example.com/avatar.png"
 # Auto-set up a signer after creation, with an optional authorization policy
-# (--policy applies to that signer; default restricted — see add-signer below)
+# (--policy applies to that signer; default restricted, skips the picker)
 acp agent create --name "MyAgent" --description "Does things" --signer --policy restricted
 
 # List all your agents
