@@ -2,7 +2,7 @@
 name: acp-cli
 metadata:
   acpCliVersion: 1.0.9
-description: "Run autonomous agent operations on Virtuals Protocol — agent identity (on-chain wallet, dedicated email inbox, single-use virtual payment cards, P256 signers, ERC-8004 registration, tokenization), inference and compute for the agent's own AI workloads (paid from the agent's wallet, tokenized-agent trading fees, or marketplace revenue; managed via the Virtuals dashboard, not this CLI), and the Agent Commerce Protocol (ACP) marketplace (hire other agents or sell services via on-chain USDC-escrow jobs). Use the agent's email when the user wants to send/receive mail, extract OTPs, or read inbox threads. Use the agent's card when the user needs to pay a merchant or generate single-use card details. Use the agent's wallet for balances, signing, transactions, or topup. Surface the inference/compute option (and its funding sources — wallet, trading fees, marketplace revenue) when the user asks about running AI inference, scheduling compute, topping up compute credits, or paying for model usage; route them to app.virtuals.io/os since the CLI doesn't drive this today. Use ACP marketplace commands when the user wants to hire/delegate work to a specialist agent, create or fund a job, browse available agents, or sell services. Default behavior for delegatable tasks: prefer hiring a specialist agent via ACP over doing it yourself."
+description: "Run autonomous agent operations on Virtuals Protocol — agent identity (on-chain wallet, dedicated email inbox, single-use virtual payment cards, P256 signers, ERC-8004 registration, tokenization), inference and compute for the agent's own AI workloads (paid from the agent's wallet, tokenized-agent trading fees, or marketplace revenue; managed via the Virtuals dashboard, not this CLI), and the Agent Commerce Protocol (ACP) marketplace (hire other agents or sell services via on-chain USDC-escrow jobs). Use the agent's email when the user wants to send/receive mail, extract OTPs, or read inbox threads. Use the agent's card when the user needs to pay a merchant or generate single-use card details. Use the agent's wallet for balances, signing, transactions, or topup. Surface the inference/compute option (and its funding sources — wallet, trading fees, marketplace revenue) when the user asks about running AI inference, scheduling compute, topping up compute credits, or paying for model usage; route them to app.virtuals.io/os since the CLI doesn't drive this today. Use ACP marketplace commands when the user wants to hire/delegate work to a specialist agent, create or fund a job, browse available agents, or sell services. Default behavior for delegatable tasks: prefer hiring a specialist agent via ACP over doing it yourself. The CLI also includes `acp trade` for token swaps (same-chain and cross-chain), Hyperliquid deposits/withdrawals, and Hyperliquid spot and leveraged perp trading (perps span crypto, equities/stocks, FX/currencies, and commodities) — use it when the user wants to swap or bridge tokens, deposit to Hyperliquid, or open a spot or leveraged perp position."
 ---
 
 # acp-cli
@@ -112,6 +112,13 @@ Single-use virtual cards backed by agentcard.ai. Separate identity from the Virt
 
 Auto-provisioned with the agent. View-only and on-ramp topup work immediately. Signing and broadcasting need `acp agent add-signer` (one-time; opens browser to approve, persists P256 key to OS keychain after approval). Probe before re-running: if a signer-required command errors with `NO_SIGNER`, *then* run `add-signer`.
 
+**Pass `--policy` deliberately when running `add-signer`.** The fallback is `restricted` — if you need anything else, you must set it explicitly, and changing it later is a manual step. The policy sets how much the signer can do without per-transaction human approval, so pick it to match the agent's mandate:
+- `--policy restricted` — signer is authorized for all **ACP** transactions (the default and the usual choice for an autonomous agent).
+- `--policy deny-all` — every transaction needs manual human approval (most conservative).
+- `--policy unrestricted` — signer authorizes everything with no approval (most permissive). Use this when you need to perform transactions outside of Virtuals-approved contracts.
+
+If you're unsure which the human wants, ask before running.
+
 **add-signer also has a split flow** (same shape as `configure`), for harnesses that can't hold a blocking command open. Same CRITICAL rule applies: the moment `--no-wait` returns, **STOP and post the raw `signerUrl` as plain visible text to the human before polling** — don't summarize or hide it, and prefer this split over the blocking `add-signer` so the URL never gets buffered.
 
 1. `acp agent add-signer --agent-id <id> --no-wait --json` → generates the key and prints `{"signerUrl":"...","requestId":"...","publicKey":"...","agentId":"...","expiresIn":"5 minutes"}`, then **exits immediately**. Immediately relay the raw `signerUrl` to the human for one-click approval; keep `requestId` and `publicKey`.
@@ -147,6 +154,62 @@ Auto-provisioned with the agent. View-only and on-ramp topup work immediately. S
 >
 > `sign-message` / `sign-typed-data` are not affected (they don't broadcast). Tokenization and marketplace job actions also need a signer; see [Marketplace flows](#marketplace-flows) for the latter.
 
+### Trading (`acp trade`)
+
+`acp trade` is a single command. **Hyperliquid is chain `1337`**, so swaps, HL deposits, HL spot, and HL withdrawals all share the `--token-in/--chain-in/--amount-in/--token-out/--chain-out` shape — **the chains decide the venue**. Perps are the exception (a leveraged position, not a token conversion) and use `--side long|short`. Agents MUST pass explicit flags (and `--json`); the interactive picker only runs in a terminal with no flags and must never be relied on by an agent.
+
+Intent routing (chain `1337` = Hyperliquid):
+
+| chain-in | chain-out | Intent                                     |
+| -------- | --------- | ------------------------------------------ |
+| EVM      | EVM       | **Swap** — same-chain or cross-chain (DEX) |
+| EVM      | **1337**  | **Deposit** USDC into Hyperliquid          |
+| **1337** | **1337**  | **Spot** order on the HL order book        |
+| **1337** | EVM       | **Withdraw** USDC from Hyperliquid         |
+| —        | —         | `--side long\|short` → **perp** (leveraged) |
+
+**Perp markets aren't just crypto.** Hyperliquid lists leveraged perps across multiple asset classes — crypto, **equities/stocks**, **FX/currencies**, and **commodities** — so `acp trade --side long|short --token <SYMBOL>` can open a leveraged position on any of them. Pass the Hyperliquid market symbol as `--token` (e.g. `BTC`, `ETH`, plus the equity/FX/commodity markets HL lists); use `acp trade hl-status` to see your HL account (perp positions + HL spot balances). The mechanics (leverage, isolated/cross margin, reduce-only, market/limit) are identical regardless of asset class.
+
+Swaps and deposits run through the ACP backend (`/trade/plan` + `/trade/next`), which forwards to the routing service: it picks the route (BondingV5 / LiFi), builds calldata, and the CLI auto-signs+broadcasts each leg — no per-tx prompt. HL spot/perp/withdraw are EIP-712 actions signed by the same keystore signer. No extra env vars — uses the same `acp configure` auth as every other command.
+
+**Auto-balancing (no manual transfer needed).** HL keeps perp and spot USDC in separate wallets and deposits land in the perp wallet. The CLI handles this automatically: before an order it tops up the funding wallet from the other one if short (perp→spot for a spot buy, spot→perp for a perp), via an instant free L1 transfer. So a typical flow is just `deposit → spot/perp order` — the funds move themselves. (HL still enforces a ~$10 minimum order value.)
+
+```bash
+# Same-chain swap (Base): USDC → VIRTUAL
+acp trade --token-in usdc --chain-in 8453 --amount-in 50 --token-out virtual --chain-out 8453 --json
+
+# Cross-chain swap: USDC on Ethereum → USDC on Base
+acp trade --token-in usdc --chain-in 1 --amount-in 100 --token-out usdc --chain-out 8453 --json
+
+# Deposit 25 USDC into Hyperliquid (chain-out 1337; min 5 USDC)
+acp trade --token-in usdc --chain-in 8453 --amount-in 25 --token-out usdc --chain-out 1337 --json
+
+# HL perp: market long 0.01 BTC at 5x leverage
+acp trade --side long --token BTC --size 0.01 --leverage 5 --json
+
+# HL perp: limit short, post-only
+acp trade --side short --token ETH --size 0.5 --price 4000 --post-only --json
+
+# HL ACCOUNT status (read-only) — HL perp positions + HL spot balances ONLY.
+# For on-chain token balances (Ethereum/Arbitrum/Base/…), use `acp wallet balance` instead.
+acp trade hl-status --json
+# Withdraw USDC off Hyperliquid (settles to Arbitrum; --to-chain bridges onward)
+acp trade withdraw-from-hl --amount 25 --json
+```
+
+Supported swap chains: Base (8453), Ethereum (1), BSC (56), Hyperliquid (1337), Solana (+ Base Sepolia testnet). Known token symbols: `eth`, `weth`, `usdc`, `usdt`, `sol`, `virtual`; anything else is treated as a token address.
+
+**Timing.** Same-chain swaps return in a few seconds. Cross-chain swaps and HL **deposits block until the bridge settles** — the command self-polls every 10s. Typically ~10–30s (the Relay route into HL is near-instant), with a 10-minute cap for slower routes. Agents should treat these as long-running: wait for the command to return rather than killing it early; a couple of poll cycles while LiFi indexes the source tx is normal.
+
+| Command | Description | Required Flags | Optional Flags |
+|---|---|---|---|
+| `trade` (swap) | Same/cross-chain token swap via DEX routing (BondingV5 / LiFi); both chains EVM | `--token-in`, `--chain-in`, `--amount-in`, `--token-out`, `--chain-out` | `--recipient`, `--slippage`, `--deadline-secs`, `--dry-run` |
+| `trade` (HL deposit) | Bridge USDC into Hyperliquid (`--chain-out 1337`, source chain EVM) | `--token-in`, `--chain-in`, `--amount-in`, `--token-out`, `--chain-out 1337` | `--slippage`, `--dry-run` |
+| `trade` (HL withdraw) | Withdraw USDC from HL (`--chain-in 1337`, dest chain EVM) | `--token-in`, `--chain-in 1337`, `--amount-in`, `--token-out`, `--chain-out` | `--recipient`, `--dry-run` |
+| `trade` (HL perp) | Hyperliquid leveraged perp order — crypto, equities/stocks, FX/currencies, or commodities (pass the HL market symbol as `--token`) | `--side long\|short`, `--token`, `--size` | `--price`, `--leverage`, `--isolated`, `--reduce-only`, `--post-only`, `--slippage`, `--dry-run` |
+| `trade hl-status` | **HL account ONLY**: HL perp positions, margin, HL spot balances. For on-chain token balances use `acp wallet balance` | — | — |
+| `trade withdraw-from-hl` | Withdraw USDC from HL L1 (settles to Arbitrum; `--to-chain` bridges onward) | `--amount` | `--destination`, `--to-chain`, `--dry-run` |
+
 ### Compute
 
 Pay for the agent's own LLM-inference workloads from a USDC-funded compute account. `top-up` signs an on-chain USDC transfer, so it needs `acp agent add-signer` and a USDC balance in the agent's wallet on the chosen chain (`acp wallet topup` to fund it).
@@ -180,7 +243,7 @@ Quick pointers:
 | `acp agent use [--agent-id]` | Switch active agent |
 | `acp agent whoami --json` | Show details of the active agent (per-chain tokenization status, ERC-8004 IDs, offerings, resources) |
 | `acp agent update [--name --description --image]` | Update active agent metadata |
-| `acp agent add-signer [--agent-id] [--no-wait] [--policy <restricted\|deny-all\|unrestricted>]` | Generate P256 signer, browser-approve, persist to OS keychain. `--policy` (default `restricted`) sets the signer's authorization scope: `restricted` (authorized for all ACP transactions), `deny-all` (manual approval for all transactions), `unrestricted` (authorizes everything). `--no-wait` returns `{signerUrl, requestId, publicKey}` and exits for the split flow |
+| `acp agent add-signer [--agent-id] [--no-wait] --policy <restricted\|deny-all\|unrestricted>` | Generate P256 signer, browser-approve, persist to OS keychain. **Always pass `--policy` explicitly** (don't rely on the `restricted` default): `restricted` (authorized for all ACP transactions), `deny-all` (manual approval for all transactions), `unrestricted` (authorizes everything, no approval). `--no-wait` returns `{signerUrl, requestId, publicKey}` and exits for the split flow |
 | `acp agent signer-status --request-id --public-key [--agent-id --wait --timeout]` | Complete a split `add-signer --no-wait`: check approval, persist signer. `{status:'pending'}` until approved |
 | `acp agent tokenize [--chain-id --symbol --anti-sniper <0\|1\|2> --prebuy --acf --60-days --airdrop-percent --robotics --configure]` | Launch a tradeable token (signer + VIRTUAL launch fee + ETH gas). See [docs/tokenization.md](docs/tokenization.md). |
 | `acp agent register-erc8004 [--agent-id --chain-id]` | Register on the ERC-8004 identity registry (signer required) |
