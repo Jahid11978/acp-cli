@@ -565,10 +565,16 @@ export interface AgentAssetsResponse {
 }
 
 export const CHAIN_NETWORK_MAP: Record<number, string> = {
+  1: "eth-mainnet",
+  11155111: "eth-sepolia",
   8453: "base-mainnet",
   84532: "base-sepolia",
   56: "bnb-mainnet",
   97: "bnb-testnet",
+  42161: "arb-mainnet",
+  137: "polygon-mainnet",
+  10: "opt-mainnet",
+  143: "monad-mainnet",
 };
 
 export interface UpdateAgentBody {
