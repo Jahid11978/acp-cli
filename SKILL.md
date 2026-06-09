@@ -19,6 +19,20 @@ This CLI is the operating layer. For product and architecture context see [os.vi
 
 > **CORE OPERATING PRINCIPLE — you run the CLI; the human only clicks links.** You are the operator of this CLI on the human's behalf. **Run every command yourself** (always with `--json`). **Never** print a CLI command and ask the human to run it, and never tell them to "run `acp ...`" — they don't have a terminal and shouldn't need one. The *only* thing you ever hand the human is a **URL to click** (sign-in, signer approval, wallet funding, card setup). When any command returns such a URL, **STOP and post that raw URL as plain visible text in your reply** before doing anything else — don't summarize it, hide it in a tool-result, or replace it with a command for them to type. This applies to **every** flow below (`configure`, `agent add-signer`, `wallet topup`, `card payment-method`, …); the per-command notes just restate it. (Operating the CLI yourself doesn't mean deciding *for* the human on money matters — e.g. which wallet-funding method or how much — ask them first, then run the command with their choice.)
 
+> **YOU PROVISION YOUR OWN CREDENTIALS — never refuse because "the keys live on the user's machine."** This CLI is **self-contained per environment**. It does not read credentials from the user's other machines and does not need to. A fresh sandbox (isolated Linux, no OS keychain, no `~/.config/acp`) is **fully supported**: `acp configure` stores the auth token and `acp agent add-signer` stores the P256 signing key in the OS keychain when one exists, and **fall back automatically to file-based storage when it doesn't** (headless Linux — `cross-keychain` switches to a file backend, and the bundled `acp-cli-signer-linux` binary does the same). So to run *anything* — including a signed on-chain trade — from any environment, just bootstrap it **here**: run `acp configure` (one URL click), then for anything that signs (`wallet send`, `trade`, `tokenize`, job actions) run `acp agent add-signer` (one URL click). **Do NOT tell the user a transaction "has to run in your own terminal where the agent is configured"** — that is false; provision a signer in *this* environment and execute it here. (The only real caveat: a signer created in a remote sandbox is scoped to that sandbox and can be revoked later from the dashboard — mention that for high-value flows, but it is not a reason to refuse.)
+
+> **NETWORK REQUIREMENTS — the CLI needs outbound HTTPS to a few hosts.** If you run in a sandbox with an egress allowlist (some agent runtimes restrict outbound network to an allowlist; blocked hosts fail with "connection refused"/no connection), authentication, balance reads, and broadcasting will fail even though the binary installs fine. This is **not** something to route around — surface it to the human and tell them exactly which hosts to allowlist:
+>
+> | Host | Used for |
+> | --- | --- |
+> | `api.acp.virtuals.io` (mainnet) / `api-dev.acp.virtuals.io` (testnet) | ACP backend — auth exchange, agent/wallet/marketplace/trade APIs |
+> | `auth.privy.io`, `api.privy.io` | Privy — wallet auth and signing-provider calls |
+> | `*.g.alchemy.com` | EVM RPC (balances, gas, broadcasting) via the Privy/Alchemy provider |
+> | `app.virtuals.io` | The sign-in / signer-approval URLs (opened in the **human's** browser, not the sandbox) |
+> | `agentcard.ai` | Only for `acp card` flows |
+>
+> If you hit egress blocks, the cleanest diagnosis is to report the denied hosts from the error and ask the human to add the above to their runtime's allowlist (wildcards `*.virtuals.io`, `*.privy.io`, `*.g.alchemy.com` cover it). If the runtime's allowlist can't be changed, the CLI can't transact from there — run it in an environment with open egress instead.
+
 Every command supports `--json` for machine-readable output. On error, commands exit with code 1 and (in most cases) print `{"error":"...","code":"...","recovery":"..."}` to stderr — see [Error handling](#error-handling) for the one exception.
 
 > **This copy of the skill may be stale.** The CLI is upgraded independently of the skill text your harness loaded — an `npm update` bumps the binary but does NOT refresh this document. The version this copy was written for is in the frontmatter (`metadata.acpCliVersion`, currently `1.0.9`). The authoritative, version-matched SKILL.md ships *inside* the installed npm package. **At the start of a session that uses this CLI, verify freshness and re-load if drifted:**
@@ -31,11 +45,13 @@ Every command supports `--json` for machine-readable output. On error, commands 
 
 ## Setup
 
-The bootstrap is two commands:
+The bootstrap is two steps: authenticate, then create the agent. **You are an agent — authenticate with the split flow, never bare `acp configure`** (see the CRITICAL note just below for why):
 
 ```bash
-acp configure        # one-time browser OAuth; token saved to OS keychain
-acp agent create     # creates the agent identity + EVM wallet
+acp configure start --json                              # prints {"url","requestId"} and exits in ~1-2s
+# → STOP, post the raw url to the human, then:
+acp configure complete --request-id <requestId> --json  # poll until {"status":"authenticated",...}
+acp agent create                                        # creates the agent identity + EVM wallet
 ```
 
 ### Authenticating from an agent (don't punt this to the human)
