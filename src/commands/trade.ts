@@ -49,6 +49,7 @@ import {
   createProviderAdapter,
   getWalletAddress,
 } from "../lib/agentFactory";
+import { withApprovalGate } from "../lib/walletGate";
 import type { IEvmProviderAdapter } from "@virtuals-protocol/acp-node-v2";
 // Hyperliquid is entirely backend-driven now — including read-only `status` via
 // /trade/hl-status — so the CLI has no @nktkas/hyperliquid dependency at all.
@@ -268,7 +269,6 @@ export function registerTradeCommands(program: Command): void {
 async function runTrade(opts: Record<string, unknown>, json: boolean): Promise<void> {
   const { apiUrl, token } = await getApiContext();
   const owner = getWalletAddress() as Address;
-  const provider = await createProviderAdapter();
 
   const body: Record<string, unknown> = { walletAddress: owner };
   const fwd = (key: string, v: unknown) => {
@@ -302,7 +302,11 @@ async function runTrade(opts: Record<string, unknown>, json: boolean): Promise<v
     `Trade ${plan.tradeId.slice(0, 8)}` +
       (plan.direction && plan.route ? ` (${plan.direction} via ${plan.route})` : "")
   );
-  const result = await runTradeLoop(apiUrl, token, provider, plan, json);
+  const result = opts.dryRun
+    ? await runTradeLoop(apiUrl, token, await createProviderAdapter(), plan, json)
+    : await withApprovalGate((provider) =>
+        runTradeLoop(apiUrl, token, provider, plan, json)
+      );
   outputTradeResult(json, result);
 }
 
