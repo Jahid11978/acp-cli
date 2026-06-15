@@ -49,7 +49,7 @@ import {
   createProviderAdapter,
   getWalletAddress,
 } from "../lib/agentFactory";
-import { withApprovalGate } from "../lib/walletGate";
+import { normalizeApprovalUrlError, withApprovalGate } from "../lib/walletGate";
 import type { IEvmProviderAdapter } from "@virtuals-protocol/acp-node-v2";
 // Hyperliquid is entirely backend-driven now — including read-only `status` via
 // /trade/hl-status — so the CLI has no @nktkas/hyperliquid dependency at all.
@@ -357,6 +357,13 @@ export async function runTradeLoop(
         });
         nextBody = { tradeId: plan.tradeId, step, txHash };
       } catch (err) {
+        const approvalErr = normalizeApprovalUrlError(err, { json });
+        if (
+          approvalErr instanceof CliError &&
+          approvalErr.code === "APPROVAL_REQUIRED"
+        ) {
+          throw approvalErr;
+        }
         const message = err instanceof Error ? err.message : String(err);
         nextBody = {
           tradeId: plan.tradeId,
@@ -377,6 +384,13 @@ export async function runTradeLoop(
             : await provider.signMessage(action.chainId, action.message ?? "");
         nextBody = { tradeId: plan.tradeId, step, signature };
       } catch (err) {
+        const approvalErr = normalizeApprovalUrlError(err, { json });
+        if (
+          approvalErr instanceof CliError &&
+          approvalErr.code === "APPROVAL_REQUIRED"
+        ) {
+          throw approvalErr;
+        }
         const message = err instanceof Error ? err.message : String(err);
         nextBody = {
           tradeId: plan.tradeId,

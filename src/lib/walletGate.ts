@@ -24,10 +24,12 @@ export async function withApprovalGate<T>(
   }
 }
 
-function normalizeApprovalUrlError(
+export function normalizeApprovalUrlError(
   err: unknown,
   opts: ApprovalGateOptions
 ): unknown {
+  if (err instanceof CliError && err.code === "APPROVAL_REQUIRED") return err;
+
   const url = extractApprovalUrl(err);
   if (!url) return err;
 
