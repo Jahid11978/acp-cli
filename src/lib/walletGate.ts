@@ -4,14 +4,62 @@ import {
 } from "@virtuals-protocol/acp-node-v2";
 import { createProviderAdapter, createSseTransport } from "./agentFactory";
 
+interface ApprovalGateOptions {
+  json?: boolean;
+}
+
 export async function withApprovalGate<T>(
-  fn: (provider: IEvmProviderAdapter) => Promise<T>
+  fn: (provider: IEvmProviderAdapter) => Promise<T>,
+  opts: ApprovalGateOptions = {}
 ): Promise<T> {
-  const provider = await createProviderAdapter();
-  const transport = await createSseTransport(provider, [STREAMS.WALLET]);
+  let transport: Awaited<ReturnType<typeof createSseTransport>> | undefined;
+  const restoreApprovalConsole = mirrorApprovalConsoleToStderr(opts);
   try {
+    const provider = await createProviderAdapter();
+    transport = await createSseTransport(provider, [STREAMS.WALLET]);
     return await fn(provider);
   } finally {
-    void Promise.resolve(transport.disconnect()).catch(() => {});
+    if (transport) {
+      void Promise.resolve(transport.disconnect()).catch(() => {});
+    }
+    restoreApprovalConsole();
   }
+}
+
+function emitApprovalUrlToStderr(url: string): void {
+  process.stderr.write(
+    `\n>>> Manual approval required. Return this URL to the user:\n\n    ${url}\n\n`
+  );
+}
+
+function mirrorApprovalConsoleToStderr(opts: ApprovalGateOptions): () => void {
+  if (!opts.json) return () => {};
+
+  const original = console.error;
+  const seen = new Set<string>();
+
+  console.error = (...args: unknown[]) => {
+    original(...args);
+
+    const url = approvalUrlFromConsoleArgs(args);
+    if (!url || seen.has(url)) return;
+
+    seen.add(url);
+    emitApprovalUrlToStderr(url);
+  };
+
+  return () => {
+    console.error = original;
+  };
+}
+
+function approvalUrlFromConsoleArgs(args: unknown[]): string | undefined {
+  const text = args
+    .map((arg) => (typeof arg === "string" ? arg : ""))
+    .join("\n");
+
+  if (!text.includes("Manual approval required")) return undefined;
+
+  const match = text.match(/Approve at:\s*(https?:\/\/[^\s]+)/i);
+  return match?.[1];
 }
