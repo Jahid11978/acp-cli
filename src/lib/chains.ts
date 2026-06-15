@@ -1,15 +1,40 @@
+import { getEvmChainByChainId } from "@virtuals-protocol/acp-node-v2";
+import type { Chain } from "viem";
 import {
-  ERC20_SPONSORED_CHAINS,
-  getEvmChainByChainId,
-} from "@virtuals-protocol/acp-node-v2";
+  arbitrum,
+  base,
+  baseSepolia,
+  bsc,
+  bscTestnet,
+  mainnet,
+  monad,
+  optimism,
+  polygon,
+  sepolia,
+} from "viem/chains";
 import { CliError } from "./errors";
 
+const ERC20_SPONSORED_CHAINS: Chain[] = [
+  mainnet,
+  sepolia,
+  base,
+  baseSepolia,
+  bsc,
+  bscTestnet,
+  arbitrum,
+  polygon,
+  optimism,
+  monad,
+];
+
 export const SPONSORED_CHAIN_IDS = ERC20_SPONSORED_CHAINS.map(
-  (chain) => chain.id
+  (chain: Chain) => chain.id
 );
 
 export function formatChainId(id: number): string {
-  const chain = getEvmChainByChainId(id);
+  const chain =
+    ERC20_SPONSORED_CHAINS.find((chain) => chain.id === id) ??
+    getEvmChainByChainId(id);
   return chain ? `${id} (${chain.name})` : String(id);
 }
 
