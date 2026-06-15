@@ -109,7 +109,11 @@ function extractObjectApprovalUrl(
   }
 
   if (isApprovalPayload(value)) {
-    const url = firstUrl(value.url);
+    const url =
+      firstUrl(value.url) ??
+      firstUrl(value.message) ??
+      firstUrl(value.error) ??
+      firstUrl(value.detail);
     if (url) return url;
   }
 
