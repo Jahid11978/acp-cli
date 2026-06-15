@@ -11,7 +11,10 @@ import {
   SseTransport,
   AcpApiClient,
 } from "@virtuals-protocol/acp-node-v2";
-import type { IEvmProviderAdapter } from "@virtuals-protocol/acp-node-v2";
+import type {
+  IEvmProviderAdapter,
+  SupportedStreams,
+} from "@virtuals-protocol/acp-node-v2";
 import {
   getBuilderCode,
   getActiveWallet,
@@ -176,7 +179,8 @@ export async function createProviderAdapter(): Promise<IEvmProviderAdapter> {
 }
 
 export async function createSseTransport(
-  provider: IEvmProviderAdapter
+  provider: IEvmProviderAdapter,
+  streams: SupportedStreams[]
 ): Promise<SseTransport> {
   const isTestnet = process.env.IS_TESTNET === "true";
   const serverUrl = isTestnet ? ACP_TESTNET_SERVER_URL : ACP_SERVER_URL;
@@ -189,13 +193,13 @@ export async function createSseTransport(
     agentAddress,
     contractAddresses: ACP_CONTRACT_ADDRESSES,
     providerSupportedChainIds,
-    signMessage: (chainId: number, message: string) =>
-      provider.signMessage(chainId, message),
-  } as unknown as Parameters<SseTransport["setContext"]>[0];
+    signTypedData: (chainId, typedData) =>
+      provider.signTypedData(chainId, typedData),
+  } as Parameters<SseTransport["setContext"]>[0];
 
   const transport = new SseTransport({ serverUrl });
   transport.setContext(ctx);
-  await transport.connect();
+  await transport.connect(undefined, streams);
   return transport;
 }
 
