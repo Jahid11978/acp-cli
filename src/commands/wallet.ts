@@ -1,23 +1,106 @@
 import type { Command } from "commander";
 import * as readline from "readline";
-import { formatUnits, isAddress, isHex } from "viem";
+import { formatUnits, parseUnits, isAddress, isHex } from "viem";
+import {
+  buildSolTransferIx,
+  buildSplTransferInstructions,
+  getSplTokenBalance,
+  AccountRole,
+  type SolanaInstructionLike,
+} from "@virtuals-protocol/acp-node-v2";
 import { isJson, outputResult, outputError, isTTY } from "../lib/output";
-import { getWalletAddress } from "../lib/agentFactory";
+import { getWalletAddress, getSolanaWalletAddress } from "../lib/agentFactory";
 import { getClient } from "../lib/api/client";
 import { getAgentId, getActiveWallet } from "../lib/config";
 import { CHAIN_NETWORK_MAP } from "../lib/api/agent";
-import type { TokenInfo } from "../lib/api/agent";
+import type { StockPosition, TokenInfo } from "../lib/api/agent";
 import { CliError } from "../lib/errors";
 import {
   assertSponsoredChainId,
   getEnvSponsoredChainIds,
   getNativeCurrency,
+  isSolanaChainId,
+  solanaChainId,
 } from "../lib/chains";
 import { c } from "../lib/color";
 import { openBrowser } from "../lib/browser";
 import { selectOption, prompt } from "../lib/prompt";
-import { withApprovalGate } from "../lib/walletGate";
+import { withApprovalGate, withSolanaWallet } from "../lib/walletGate";
 import qrcode from "qrcode-terminal";
+
+// Address type accepted by the SDK Solana helpers (branded), derived without a
+// direct @solana/kit import.
+type SolAddr = Parameters<typeof buildSolTransferIx>[0];
+
+const ACCOUNT_ROLE_BY_NAME: Record<string, AccountRole> = {
+  writable_signer: AccountRole.WRITABLE_SIGNER,
+  writable: AccountRole.WRITABLE,
+  readonly_signer: AccountRole.READONLY_SIGNER,
+  readonly: AccountRole.READONLY,
+};
+
+// Render Treasures tokenized-stock holdings as a table beneath the on-chain
+// token list. `usd_value` is precomputed by Treasures, so prefer it; fall back
+// to tokens × usd_per_token, and show "—" when neither is available (null means
+// "unknown", never 0).
+// USD for a stock position: prefer Treasures' precomputed usd_value, fall back
+// to tokens × usd_per_token, and return "—" when neither is known (null means
+// "unknown", never 0). Shared by the TTY table and the piped output so both
+// agree.
+function stockUsd(p: StockPosition): string {
+  if (p.usd_value != null) {
+    return `$${parseFloat(p.usd_value).toFixed(2)}`;
+  }
+  if (p.usd_per_token != null) {
+    return `$${(parseFloat(p.tokens) * parseFloat(p.usd_per_token)).toFixed(2)}`;
+  }
+  return "—";
+}
+
+// A nullable USD amount → "$12.34", or "—" when unknown (null ≠ 0).
+function usd(v: string | null): string {
+  return v == null ? "—" : `$${parseFloat(v).toFixed(2)}`;
+}
+
+// Unrealized PnL with an explicit sign so gains/losses read at a glance.
+function pnl(v: string | null): string {
+  if (v == null) return "—";
+  const n = parseFloat(v);
+  return `${n < 0 ? "-" : "+"}$${Math.abs(n).toFixed(2)}`;
+}
+
+// Truncate a long decimal string to keep table columns aligned.
+function clip(s: string, max: number): string {
+  return s.length > max ? s.slice(0, max) : s;
+}
+
+function printStockPositions(positions: StockPosition[]): void {
+  if (positions.length === 0) return;
+  console.log(`\n  ${c.bold("Tokenized Stocks")}\n`);
+  const header =
+    `  ${c.dim("TICKER".padEnd(8))}${c.dim("TOKENS".padEnd(14))}` +
+    `${c.dim("SHARES".padEnd(13))}${c.dim("$/SHARE".padEnd(11))}` +
+    `${c.dim("$/TOKEN".padEnd(11))}${c.dim("AVG ENTRY".padEnd(11))}` +
+    `${c.dim("VALUE".padEnd(11))}${c.dim("PnL")}`;
+  console.log(header);
+  for (const p of positions) {
+    console.log(
+      `  ${c.cyan(p.ticker.padEnd(8))}${clip(p.tokens, 12).padEnd(14)}` +
+        `${clip(p.shares ?? "—", 11).padEnd(13)}${usd(p.usd_per_share).padEnd(11)}` +
+        `${usd(p.usd_per_token).padEnd(11)}${usd(p.avg_entry_price_per_share).padEnd(11)}` +
+        `${stockUsd(p).padEnd(11)}${pnl(p.unrealized_pnl)}`
+    );
+  }
+  console.log("");
+}
+
+// Instruction data accepts hex (0x…) or base64.
+function decodeIxData(data: string): Uint8Array {
+  const buf = data.startsWith("0x")
+    ? Buffer.from(data.slice(2), "hex")
+    : Buffer.from(data, "base64");
+  return Uint8Array.from(buf);
+}
 
 // In --json mode the funding URL goes to stdout as JSON for machine parsing,
 // but many agent harnesses buffer or suppress stdout while passing stderr
@@ -30,18 +113,18 @@ function emitTopupUrlToStderr(url: string): void {
   );
 }
 
-// Resolves the native currency (name + symbol) for a token's network, used as
-// the fallback label for native-token balances so non-ETH chains (BNB, POL,
-// MON, …) aren't mislabeled as ETH.
+// Resolves the native currency (name + symbol + decimals) for a token's network,
+// used as the fallback label for native-token balances so non-ETH chains (BNB,
+// POL, MON, SOL, …) aren't mislabeled as ETH.
 type NativeResolver = (
   network: string
-) => { name: string; symbol: string } | undefined;
+) => { name: string; symbol: string; decimals: number } | undefined;
 
 // Derive the displayable symbol/name/balance/usd for a token. Shared by the
 // single-chain and all-chains balance views so formatting stays identical.
 function formatToken(
   t: TokenInfo,
-  native?: { name: string; symbol: string }
+  native?: { name: string; symbol: string; decimals: number }
 ): {
   symbol: string;
   name: string;
@@ -54,7 +137,8 @@ function formatToken(
     t.tokenMetadata.symbol ?? (isNative ? native?.symbol ?? "ETH" : "???");
   const name =
     t.tokenMetadata.name ?? (isNative ? native?.name ?? "Ether" : "");
-  const decimals = t.tokenMetadata.decimals ?? 18;
+  const decimals =
+    t.tokenMetadata.decimals ?? (isNative ? native?.decimals ?? 18 : 18);
   const balance = formatUnits(BigInt(t.tokenBalance), decimals);
   const unitPrice = parseFloat(t.tokenPrices?.[0]?.value ?? "0");
   const value = unitPrice * parseFloat(balance);
@@ -79,6 +163,121 @@ function printTokenTable(tokens: TokenInfo[], nativeFor: NativeResolver): void {
     console.log(
       `  ${c.cyan(symbol.padEnd(10))}${name.padEnd(22)}${bal.padEnd(24)}${usd}`
     );
+  }
+}
+
+// Shared balance renderer for both the unified `wallet balance` and the
+// `wallet sol balance` shortcut, so EVM and Solana output stay identical
+// (JSON / grouped TTY table with USD / piped TSV).
+function renderBalances(opts: {
+  json: boolean;
+  networks: string[]; // queried order; drives grouping + the "Checked" line
+  networkToChainId: Map<string, number>;
+  tokens: TokenInfo[];
+  // Tokenized-stock holdings span both chains and aren't tied to a queried
+  // network, so they render once, after the per-network token tables.
+  stocks?: StockPosition[];
+  evmAddress?: string;
+  solAddress?: string;
+}): void {
+  const {
+    json,
+    networks,
+    networkToChainId,
+    tokens,
+    stocks = [],
+    evmAddress,
+    solAddress,
+  } = opts;
+  const single = networks.length === 1;
+  const nativeFor: NativeResolver = (network) => {
+    const id = networkToChainId.get(network);
+    return id !== undefined ? getNativeCurrency(id) : undefined;
+  };
+
+  if (json) {
+    if (single) {
+      const network = networks[0];
+      const chainId = networkToChainId.get(network);
+      const address = isSolanaChainId(chainId ?? -1) ? solAddress : evmAddress;
+      outputResult(json, { chainId, network, address, tokens, stocks });
+    } else {
+      outputResult(json, {
+        chains: networks.map((network) => ({
+          chainId: networkToChainId.get(network),
+          network,
+        })),
+        address: evmAddress,
+        solanaAddress: solAddress,
+        tokens,
+        stocks,
+      });
+    }
+    return;
+  }
+
+  if (isTTY()) {
+    if (single) {
+      const network = networks[0];
+      const chainId = networkToChainId.get(network);
+      const address = isSolanaChainId(chainId ?? -1) ? solAddress : evmAddress;
+      console.log(`\n${c.bold(`Wallet Balance on ${network} (${chainId})`)}\n`);
+      console.log(`  ${c.bold("Address:")}  ${c.dim(address ?? "")}\n`);
+      if (tokens.length === 0) {
+        console.log("  No tokens found.\n");
+      } else {
+        printTokenTable(tokens, nativeFor);
+        console.log("");
+      }
+    } else {
+      console.log(`\n${c.bold("Wallet Balance")}\n`);
+      if (evmAddress) {
+        console.log(`  ${c.bold("EVM:")}     ${c.dim(evmAddress)}`);
+      }
+      if (solAddress) {
+        console.log(`  ${c.bold("Solana:")}  ${c.dim(solAddress)}`);
+      }
+      console.log("");
+
+      // Group tokens by network, preserving the queried order. Networks with
+      // no tokens are hidden.
+      let printedAny = false;
+      for (const network of networks) {
+        const group = tokens.filter((t) => t.network === network);
+        if (group.length === 0) continue;
+        printedAny = true;
+        const chainId = networkToChainId.get(network);
+        console.log(`  ${c.bold(`${network} (${chainId})`)}`);
+        printTokenTable(group, nativeFor);
+        console.log("");
+      }
+      if (!printedAny) {
+        console.log("  No tokens found.\n");
+      }
+      console.log(
+        `  ${c.dim(`Checked: ${networks.join(", ")} (${networks.length} chains)`)}\n`
+      );
+    }
+    // Stocks span both chains — print the table once, after the token output.
+    printStockPositions(stocks);
+  } else {
+    console.log("NETWORK\tTOKEN\tNAME\tBALANCE\tUSD\tCONTRACT");
+    for (const t of tokens) {
+      const { symbol, name, balance, usd: usdValue, contract } = formatToken(
+        t,
+        nativeFor(t.network)
+      );
+      console.log(
+        `${t.network}\t${symbol}\t${name}\t${balance}\t${usdValue}\t${contract}`
+      );
+    }
+    for (const p of stocks) {
+      console.log(
+        `${p.token_ticker ?? p.ticker}\t${p.ticker}\t${p.tokens}\t` +
+          `${p.shares ?? "—"}\t${usd(p.usd_per_share)}\t${usd(p.usd_per_token)}\t` +
+          `${usd(p.avg_entry_price_per_share)}\t${stockUsd(p)}\t${pnl(p.unrealized_pnl)}\tstock`
+      );
+    }
   }
 }
 
@@ -228,22 +427,28 @@ export function registerWalletCommands(program: Command): void {
   wallet
     .command("balance")
     .description(
-      "Show token balances for the active wallet. Omit --chain-id to show all sponsored chains for the current environment."
+      "Show token balances. With no flags, shows all sponsored EVM chains plus Solana for the current environment. Narrow with --chain-id or --cluster."
     )
-    .option("--chain-id <id>", "Chain ID (omit to query all sponsored chains)")
+    .option("--chain-id <id>", "Chain ID (EVM, or 500/501 for Solana)")
+    .option("--cluster <name>", "Solana only: devnet | mainnet")
     .action(async (opts, cmd) => {
       const json = isJson(cmd);
       try {
-        // Resolve the set of chains to query: a single explicit --chain-id, or
-        // every sponsored chain for the current environment when omitted.
-        const explicit = opts.chainId !== undefined;
+        // Resolve the chain-id set to query and whether this is an explicit
+        // single-chain request (vs the default all-chains view).
         let chainIds: number[];
-        if (explicit) {
+        let explicit: boolean;
+        if (opts.chainId !== undefined) {
           const chainId = Number(opts.chainId);
-          assertSponsoredChainId(chainId);
+          if (!isSolanaChainId(chainId)) assertSponsoredChainId(chainId);
           chainIds = [chainId];
+          explicit = true;
+        } else if (opts.cluster !== undefined) {
+          chainIds = [solanaChainId(opts.cluster)];
+          explicit = true;
         } else {
-          chainIds = getEnvSponsoredChainIds();
+          chainIds = [...getEnvSponsoredChainIds(), solanaChainId()];
+          explicit = false;
         }
 
         // Map each chain id to its network string and build a reverse lookup so
@@ -279,86 +484,44 @@ export function registerWalletCommands(program: Command): void {
           );
         }
 
+        // Resolve the Solana address only if a Solana network is in scope. In
+        // the default all-chains view a missing Solana wallet is skipped
+        // silently; an explicit Solana request surfaces the error.
+        let solAddress: string | undefined;
+        const hasSolana = networks.some((n) =>
+          isSolanaChainId(networkToChainId.get(n) ?? -1)
+        );
+        if (hasSolana) {
+          try {
+            solAddress = await getSolanaWalletAddress();
+          } catch (err) {
+            if (explicit) throw err;
+            // Drop the Solana network(s) and continue with EVM only.
+            for (const [network, id] of [...networkToChainId.entries()]) {
+              if (isSolanaChainId(id)) {
+                networks.splice(networks.indexOf(network), 1);
+                networkToChainId.delete(network);
+              }
+            }
+          }
+        }
+
         const { agentApi } = await getClient();
         const assets = await agentApi.getAgentAssets(agentId, networks);
         const tokens = assets.data.tokens;
+        // The Treasures portfolio spans both chains and isn't tied to the
+        // queried network, so surface every position regardless of chain-id.
+        const stocks = assets.data.stocks.positions;
 
-        // Native-currency fallback label, resolved per token via its network.
-        const nativeFor: NativeResolver = (network) => {
-          const id = networkToChainId.get(network);
-          return id !== undefined ? getNativeCurrency(id) : undefined;
-        };
-
-        if (json) {
-          if (explicit) {
-            outputResult(json, {
-              chainId: chainIds[0],
-              network: networks[0],
-              address: walletAddress,
-              tokens,
-            });
-          } else {
-            outputResult(json, {
-              chains: networks.map((network) => ({
-                chainId: networkToChainId.get(network),
-                network,
-              })),
-              address: walletAddress,
-              tokens,
-            });
-          }
-          return;
-        }
-
-        if (isTTY()) {
-          if (explicit) {
-            console.log(
-              `\n${c.bold(
-                `Wallet Balance on ${networks[0]} (${chainIds[0]})`
-              )}\n`
-            );
-            console.log(`  ${c.bold("Address:")}  ${c.dim(walletAddress)}\n`);
-            if (tokens.length === 0) {
-              console.log("  No tokens found.\n");
-            } else {
-              printTokenTable(tokens, nativeFor);
-              console.log("");
-            }
-          } else {
-            console.log(`\n${c.bold("Wallet Balance")}\n`);
-            console.log(`  ${c.bold("Address:")}  ${c.dim(walletAddress)}\n`);
-
-            // Group tokens by network, preserving the queried order. Networks
-            // with no tokens are hidden.
-            let printedAny = false;
-            for (const network of networks) {
-              const group = tokens.filter((t) => t.network === network);
-              if (group.length === 0) continue;
-              printedAny = true;
-              const chainId = networkToChainId.get(network);
-              console.log(`  ${c.bold(`${network} (${chainId})`)}`);
-              printTokenTable(group, nativeFor);
-              console.log("");
-            }
-            if (!printedAny) {
-              console.log("  No tokens found.\n");
-            }
-            console.log(
-              `  ${c.dim(`Checked: ${networks.join(", ")} (${networks.length} chains)`)}\n`
-            );
-          }
-        } else {
-          console.log("NETWORK\tTOKEN\tNAME\tBALANCE\tUSD\tCONTRACT");
-          for (const t of tokens) {
-            const { symbol, name, balance, usd, contract } = formatToken(
-              t,
-              nativeFor(t.network)
-            );
-            console.log(
-              `${t.network}\t${symbol}\t${name}\t${balance}\t${usd}\t${contract}`
-            );
-          }
-        }
+        renderBalances({
+          json,
+          networks,
+          networkToChainId,
+          tokens,
+          stocks,
+          evmAddress: walletAddress,
+          solAddress,
+        });
       } catch (err) {
         outputError(json, err instanceof Error ? err : String(err));
       }
@@ -511,6 +674,161 @@ export function registerWalletCommands(program: Command): void {
             "Use --method coinbase, --method card, or --method qr"
           );
         }
+      } catch (err) {
+        outputError(json, err instanceof Error ? err : String(err));
+      }
+    });
+
+  // -----------------------------------------------------------------------
+  // Solana wallet (`wallet sol …`). The cluster is implied by IS_TESTNET
+  // (devnet on testnet, mainnet otherwise); `--cluster` overrides. No chain-id.
+  // -----------------------------------------------------------------------
+  const sol = wallet.command("sol").description("Solana wallet commands");
+
+  sol
+    .command("address")
+    .description("Show the active agent's Solana address")
+    .action(async (_opts, cmd) => {
+      const json = isJson(cmd);
+      try {
+        const address = await getSolanaWalletAddress();
+        outputResult(json, { address });
+      } catch (err) {
+        outputError(json, err instanceof Error ? err : String(err));
+      }
+    });
+
+  sol
+    .command("balance")
+    .description("Show SOL + SPL token balances")
+    .option("--cluster <name>", "devnet | mainnet (default from env)")
+    .action(async (opts, cmd) => {
+      const json = isJson(cmd);
+      try {
+        const chainId = solanaChainId(opts.cluster);
+        const network = CHAIN_NETWORK_MAP[chainId]!;
+        const activeWallet = getActiveWallet();
+        const agentId = activeWallet ? getAgentId(activeWallet) : undefined;
+        if (!agentId) {
+          throw new CliError(
+            "Agent ID not found for active wallet.",
+            "NO_ACTIVE_AGENT",
+            "Run `acp agent list` or `acp agent use` to set an active agent."
+          );
+        }
+        const address = await getSolanaWalletAddress();
+        const { agentApi } = await getClient();
+        const assets = await agentApi.getAgentAssets(agentId, [network]);
+        const tokens = assets.data.tokens;
+        const stocks = assets.data.stocks.positions;
+
+        renderBalances({
+          json,
+          networks: [network],
+          networkToChainId: new Map([[network, chainId]]),
+          tokens,
+          stocks,
+          solAddress: address,
+        });
+      } catch (err) {
+        outputError(json, err instanceof Error ? err : String(err));
+      }
+    });
+
+  sol
+    .command("sign-message")
+    .description("Sign a plaintext message with the Solana wallet")
+    .requiredOption("--message <text>", "Message to sign")
+    .option("--cluster <name>", "devnet | mainnet (default from env)")
+    .action(async (opts, cmd) => {
+      const json = isJson(cmd);
+      try {
+        const chainId = solanaChainId(opts.cluster);
+        const signature = await withSolanaWallet(chainId, (p) =>
+          p.signMessage(opts.message)
+        );
+        outputResult(json, { signature });
+      } catch (err) {
+        outputError(json, err instanceof Error ? err : String(err));
+      }
+    });
+
+  sol
+    .command("transfer")
+    .description("Send SOL, or an SPL token with --token")
+    .requiredOption("--to <address>", "Recipient address")
+    .requiredOption("--amount <amount>", "Amount in human units (e.g. 0.001)")
+    .option("--token <mint>", "SPL mint address (omit for native SOL)")
+    .option("--cluster <name>", "devnet | mainnet (default from env)")
+    .action(async (opts, cmd) => {
+      const json = isJson(cmd);
+      try {
+        const chainId = solanaChainId(opts.cluster);
+        const signature = await withSolanaWallet(chainId, async (provider) => {
+          const me = (await provider.getAddress()) as SolAddr;
+          const to = opts.to as SolAddr;
+          if (opts.token) {
+            const mint = opts.token as SolAddr;
+            const { decimals } = await getSplTokenBalance(
+              provider.getRpc(),
+              me,
+              mint
+            );
+            const amount = parseUnits(opts.amount, decimals);
+            const ixs = await buildSplTransferInstructions({
+              owner: me,
+              recipient: to,
+              mint,
+              amount,
+              payer: me,
+            });
+            return provider.sendInstructions(ixs);
+          }
+          const lamports = parseUnits(opts.amount, 9);
+          return provider.sendInstructions([buildSolTransferIx(me, to, lamports)]);
+        });
+        outputResult(json, { signature });
+      } catch (err) {
+        outputError(json, err instanceof Error ? err : String(err));
+      }
+    });
+
+  sol
+    .command("send-instructions")
+    .description("Send a raw Solana instruction set (advanced)")
+    .requiredOption(
+      "--instructions <json>",
+      'JSON array: [{ programAddress, accounts: [{ address, role }], data }]'
+    )
+    .option("--cluster <name>", "devnet | mainnet (default from env)")
+    .action(async (opts, cmd) => {
+      const json = isJson(cmd);
+      try {
+        const chainId = solanaChainId(opts.cluster);
+        const parsed = JSON.parse(opts.instructions) as Array<{
+          programAddress: string;
+          accounts: { address: string; role: string }[];
+          data: string;
+        }>;
+        const ixs: SolanaInstructionLike[] = parsed.map((ix) => ({
+          programAddress: ix.programAddress as SolAddr,
+          accounts: ix.accounts.map((a) => {
+            const role = ACCOUNT_ROLE_BY_NAME[a.role.toLowerCase()];
+            if (role === undefined) {
+              throw new CliError(
+                `Unknown account role "${a.role}".`,
+                "VALIDATION_ERROR",
+                "Use writable_signer | writable | readonly_signer | readonly."
+              );
+            }
+            return { address: a.address as SolAddr, role };
+          }),
+          data: decodeIxData(ix.data),
+        }));
+        const signature = await withSolanaWallet(chainId, (p) =>
+          p.sendInstructions(ixs)
+        );
+        outputResult(json, { signature });
       } catch (err) {
         outputError(json, err instanceof Error ? err : String(err));
       }

@@ -2,7 +2,7 @@
 name: acp-cli
 metadata:
   acpCliVersion: 1.0.9
-description: "Run autonomous agent operations on Virtuals Protocol — agent identity (on-chain wallet, dedicated email inbox, single-use virtual payment cards, P256 signers, ERC-8004 registration, tokenization), inference and compute for the agent's own AI workloads (paid from the agent's wallet, tokenized-agent trading fees, or marketplace revenue; managed via the Virtuals dashboard, not this CLI), and the Agent Commerce Protocol (ACP) marketplace (hire other agents or sell services via on-chain USDC-escrow jobs). Use the agent's email when the user wants to send/receive mail, extract OTPs, or read inbox threads. Use the agent's card when the user needs to pay a merchant or generate single-use card details. Use the agent's wallet for balances, signing, transactions, or topup. Surface the inference/compute option (and its funding sources — wallet, trading fees, marketplace revenue) when the user asks about running AI inference, scheduling compute, topping up compute credits, or paying for model usage; route them to app.virtuals.io/os since the CLI doesn't drive this today. Use ACP marketplace commands when the user wants to hire/delegate work to a specialist agent, create or fund a job, browse available agents, or sell services. Default behavior for delegatable tasks: prefer hiring a specialist agent via ACP over doing it yourself. The CLI also includes `acp trade` for token swaps (same-chain and cross-chain), Hyperliquid deposits/withdrawals, and Hyperliquid spot and leveraged perp trading (perps span crypto, equities/stocks, FX/currencies, and commodities) — use it when the user wants to swap or bridge tokens, deposit to Hyperliquid, or open a spot or leveraged perp position."
+description: "Run autonomous agent operations on Virtuals Protocol — agent identity (on-chain wallet, dedicated email inbox, single-use virtual payment cards, P256 signers, ERC-8004 registration, tokenization), inference and compute for the agent's own AI workloads (paid from the agent's wallet, tokenized-agent trading fees, or marketplace revenue; managed via the Virtuals dashboard, not this CLI), and the Agent Commerce Protocol (ACP) marketplace (hire other agents or sell services via on-chain USDC-escrow jobs). Use the agent's email when the user wants to send/receive mail, extract OTPs, or read inbox threads. Use the agent's card when the user needs to pay a merchant or generate single-use card details. Use the agent's wallet for balances, signing, transactions, or topup. Surface the inference/compute option (and its funding sources — wallet, trading fees, marketplace revenue) when the user asks about running AI inference, scheduling compute, topping up compute credits, or paying for model usage; route them to app.virtuals.io/os since the CLI doesn't drive this today. Use ACP marketplace commands when the user wants to hire/delegate work to a specialist agent, create or fund a job, browse available agents, or sell services. Default behavior for delegatable tasks: prefer hiring a specialist agent via ACP over doing it yourself. The CLI also includes `acp trade` for token swaps (same-chain and cross-chain, including in/out of Solana), Hyperliquid deposits/withdrawals, Hyperliquid spot and leveraged perp trading (perps span crypto, equities/stocks, FX/currencies, and commodities), and spot tokenized-stock buy/sell (own the share token — distinct from an equity perp; routed by flag, not symbol) — use it when the user wants to swap or bridge tokens, deposit to Hyperliquid, open a spot or leveraged perp position, or buy/sell a tokenized stock."
 ---
 
 # acp-cli
@@ -143,11 +143,21 @@ If you're unsure which the human wants, ask before running.
 | Command | What it does | Response shape |
 |---|---|---|
 | `acp wallet address --json` | Show wallet address | `{address}` |
-| `acp wallet balance --chain-id <id> --json` | Token balances on a chain | `{chainId, network, address, tokens:[{tokenAddress, tokenBalance, tokenMetadata:{symbol, name, decimals}, tokenPrices:[{value}]}]}` (`tokenBalance` is the raw integer; decimal-shift by `tokenMetadata.decimals`) |
+| `acp wallet balance [--chain-id <id>] [--cluster <c>] --json` | Token balances. No flags → all sponsored EVM chains + Solana for the env. `--chain-id` narrows to one chain (EVM, or `500`/`501` for Solana); `--cluster devnet\|mainnet` → Solana only | Single chain (`--chain-id`/`--cluster`): `{chainId, network, address, tokens:[…]}`. All-chains (no flags): `{chains:[{chainId, network}], address, solanaAddress, tokens:[…]}` — `tokens` each carry `network`; group by it. Each token: `{tokenAddress, tokenBalance, tokenMetadata:{symbol, name, decimals}, tokenPrices:[{value}]}` (`tokenBalance` raw; decimal-shift by `decimals`, native token has `tokenAddress:null`) |
 | `acp wallet topup --chain-id <id> --method coinbase \| card \| qr [--amount <usd>] [--email <e>] [--us] --json` | On-ramp via Coinbase Pay, Crossmint card, or QR | Coinbase: `{walletAddress, method:"coinbase", url}`. Card: `{walletAddress, method:"card", checkoutUrl}`. QR: `{walletAddress, method:"qr", chainId}` |
 | `acp wallet sign-message --message <text> --chain-id <id> --json` | Sign plaintext (signer required) | `{signature}` |
 | `acp wallet sign-typed-data --data <json> --chain-id <id> --json` | Sign EIP-712 (signer required) | `{signature}` |
 | `acp wallet send-transaction --chain-id <id> --to <addr> [--value <wei>] [--data <hex>] --json` | Broadcast (signer + dashboard prerequisites — see callout below) | `{transactionHash}` |
+
+**Solana wallet** (`acp wallet sol …`). Same agent, its Solana address (same signer). No `--chain-id` — the cluster is implied by `IS_TESTNET` (devnet on testnet, else mainnet), override with `--cluster devnet|mainnet`. Amounts are human units (SOL, or token units). `transfer`/`sign-message`/`send-instructions` need a signer; `sign-typed-data`/`topup` are EVM-only. (Solana balances also appear in the unified `acp wallet balance`; `wallet sol balance` is a Solana-only shortcut with identical output.)
+
+| Command | What it does | Response shape |
+|---|---|---|
+| `acp wallet sol address --json` | Show the agent's Solana address | `{address}` |
+| `acp wallet sol balance [--cluster <c>] --json` | SOL + SPL balances (server-side) | `{chainId, network, address, tokens:[{tokenAddress, tokenBalance, tokenMetadata:{symbol, name, decimals}, tokenPrices:[{value}]}]}` (native SOL has `tokenAddress:null`; `tokenBalance` raw, decimal-shift by `decimals`) |
+| `acp wallet sol sign-message --message <text> [--cluster <c>] --json` | Sign plaintext (signer required) | `{signature}` (base58) |
+| `acp wallet sol transfer --to <addr> --amount <human> [--token <mint>] [--cluster <c>] --json` | Send SOL, or an SPL token with `--token` (auto-creates the recipient's token account) | `{signature}` |
+| `acp wallet sol send-instructions --instructions <json> [--cluster <c>] --json` | Send a raw instruction set (advanced); `<json>` = `[{programAddress, accounts:[{address, role}], data}]`, `data` base64/0x-hex, `role` ∈ writable_signer\|writable\|readonly_signer\|readonly | `{signature}` |
 
 > **CRITICAL — YOU run topup; never tell the human to run it.** When the wallet needs funds, **you (the agent) run the topup command yourself** and relay the resulting link. Do **NOT** print a command like `acp wallet topup --chain-id 8453` and ask the human to run it — that is the single most common failure here. The human's only job is to click the link you give them; they should never touch the CLI.
 >
@@ -205,15 +215,28 @@ Intent routing (chain `1337` = Hyperliquid):
 | EVM      | **1337**  | **Deposit** USDC into Hyperliquid          |
 | **1337** | **1337**  | **Spot** order on the HL order book        |
 | **1337** | EVM       | **Withdraw** USDC from Hyperliquid         |
+| **Solana** | EVM     | **Swap** out of Solana (USDC@sol → an EVM token) |
 | —        | —         | `--side long\|short` → **perp** (leveraged) |
+| —        | —         | `--token <TICKER> --amount-usdc\|--amount-shares` (NO `--side`) → **tokenized stock** (spot) |
+
+**Tokenized stocks (spot) — buy/sell real shares, not a perp.** `acp trade --token <TICKER> --amount-usdc <usd>` buys tokenized equity (you receive the share token); `--amount-shares <n>` sells. This is **spot** (no leverage, no funding, you own the asset) — distinct from an HL equity *perp*. The backend auto-picks the venue/chain; you don't specify one. Fund a buy with USDC you already hold, or from another chain (it bridges first). A buy with no venue pinned auto-routes; sells need `--chain eth|sol` (the server can't see which chain holds your shares).
+
+> **Stock vs perp — route by FLAG, never the symbol.** `AAPL` exists as both a tokenized stock AND an HL equity perp. The companion flag decides: `--amount-usdc`/`--amount-shares` (no `--side`) → spot stock; `--side long|short` → leveraged perp. Never infer the venue from the ticker.
 
 **Perp markets aren't just crypto.** Hyperliquid lists leveraged perps across multiple asset classes — crypto, **equities/stocks**, **FX/currencies**, and **commodities** — so `acp trade --side long|short --token <SYMBOL>` can open a leveraged position on any of them. Pass the Hyperliquid market symbol as `--token` (e.g. `BTC`, `ETH`, plus the equity/FX/commodity markets HL lists); use `acp trade hl-status` to see your HL account (perp positions + HL spot balances). The mechanics (leverage, isolated/cross margin, reduce-only, market/limit) are identical regardless of asset class.
+
+**Discovery — `acp trade stock-list [symbol]` (read-only).** To find out *what* is tradable before constructing a trade. With **no symbol** it returns `{ stocks, hlSpot }`: `stocks` is the tokenized-stock catalog (`symbol`, `name`, `protocols`) and `hlSpot` is the HL spot order book (`token`, `pair`); a `warnings` field appears only if a venue's catalog is momentarily unavailable. With a **symbol** it returns `{ symbol, name?, routes }`, each route `{ kind, label, token, maxLeverage? }` — **`token` is the exact ticker to pass** (an HL equity perp must be quoted `xyz:AAPL`; the spot routes use bare `AAPL`). Use it to resolve the right ticker, then build the trade with the flags above. **It never implies you must pre-hold USDC on Hyperliquid: USDC is the settlement currency, not a prerequisite — any trade can be funded with any supported token on any supported chain via `--token-in`/`--chain-in`, and the backend bridges/swaps/deposits to settle.**
 
 Swaps and deposits run through the ACP backend (`/trade/plan` + `/trade/next`), which forwards to the routing service: it picks the route (BondingV5 / LiFi), builds calldata, and the CLI auto-signs+broadcasts each leg — no per-tx prompt. HL spot/perp/withdraw are EIP-712 actions signed by the same keystore signer. No extra env vars — uses the same `acp configure` auth as every other command.
 
 **Auto-balancing (no manual transfer needed).** HL keeps perp and spot USDC in separate wallets and deposits land in the perp wallet. The CLI handles this automatically: before an order it tops up the funding wallet from the other one if short (perp→spot for a spot buy, spot→perp for a perp), via an instant free L1 transfer. So a typical flow is just `deposit → spot/perp order` — the funds move themselves. (HL still enforces a ~$10 minimum order value.)
 
 ```bash
+# Discover what's tradable (read-only). No symbol → spot markets (stocks + HL spot).
+acp trade stock-list --json
+# With a symbol → every route for that asset, each naming the exact ticker to pass.
+acp trade stock-list AAPL --json
+
 # Same-chain swap (Base): USDC → VIRTUAL
 acp trade --token-in usdc --chain-in 8453 --amount-in 50 --token-out virtual --chain-out 8453 --json
 
@@ -223,6 +246,15 @@ acp trade --token-in usdc --chain-in 1 --amount-in 100 --token-out usdc --chain-
 # Deposit 25 USDC into Hyperliquid (chain-out 1337; min 5 USDC)
 acp trade --token-in usdc --chain-in 8453 --amount-in 25 --token-out usdc --chain-out 1337 --json
 
+# Tokenized stock: BUY $5 of AAPL with USDC you hold (auto-routes the venue)
+acp trade --token AAPL --amount-usdc 5 --json
+# Tokenized stock: BUY funded from another chain (bridges VIRTUAL@Base → USDC, then buys)
+acp trade --token AAPL --token-in virtual --chain-in 8453 --amount-in 8 --json
+# Tokenized stock: SELL 0.01 AAPL shares (sells need an explicit --chain eth|sol)
+acp trade --token AAPL --amount-shares 0.01 --chain sol --json
+# Swap out of Solana: USDC@sol → USDC@Base
+acp trade --token-in usdc --chain-in solana --amount-in 5 --token-out usdc --chain-out 8453 --json
+
 # HL perp: market long 0.01 BTC at 5x leverage
 acp trade --side long --token BTC --size 0.01 --leverage 5 --json
 
@@ -230,7 +262,7 @@ acp trade --side long --token BTC --size 0.01 --leverage 5 --json
 acp trade --side short --token ETH --size 0.5 --price 4000 --post-only --json
 
 # HL ACCOUNT status (read-only) — HL perp positions + HL spot balances ONLY.
-# For on-chain token balances (Ethereum/Arbitrum/Base/…), use `acp wallet balance` instead.
+# For on-chain token balances (all sponsored EVM chains + Solana), use `acp wallet balance` instead.
 acp trade hl-status --json
 # Withdraw USDC off Hyperliquid (settles to Arbitrum; --to-chain bridges onward)
 acp trade withdraw-from-hl --amount 25 --json
@@ -246,6 +278,8 @@ Supported swap chains: Base (8453), Ethereum (1), BSC (56), Hyperliquid (1337), 
 | `trade` (HL deposit) | Bridge USDC into Hyperliquid (`--chain-out 1337`, source chain EVM) | `--token-in`, `--chain-in`, `--amount-in`, `--token-out`, `--chain-out 1337` | `--slippage`, `--dry-run` |
 | `trade` (HL withdraw) | Withdraw USDC from HL (`--chain-in 1337`, dest chain EVM) | `--token-in`, `--chain-in 1337`, `--amount-in`, `--token-out`, `--chain-out` | `--recipient`, `--dry-run` |
 | `trade` (HL perp) | Hyperliquid leveraged perp order — crypto, equities/stocks, FX/currencies, or commodities (pass the HL market symbol as `--token`) | `--side long\|short`, `--token`, `--size` | `--price`, `--leverage`, `--isolated`, `--reduce-only`, `--post-only`, `--slippage`, `--dry-run` |
+| `trade` (tokenized stock) | Spot buy/sell of a tokenized equity (you own the share token; NO `--side`). Backend auto-routes the venue/chain | `--token <TICKER>`, and `--amount-usdc` (buy) **or** `--amount-shares` (sell) | buy can fund from another chain via `--token-in`/`--chain-in`/`--amount-in`; `--chain eth\|sol` (required on sells), `--protocol`, `--slippage`, `--dry-run` |
+| `trade stock-list [symbol]` | **Read-only discovery.** No symbol → spot markets (`stocks` + `hlSpot`). With a symbol → routes for that asset, each naming the exact `token` to pass | — | `[symbol]` |
 | `trade hl-status` | **HL account ONLY**: HL perp positions, margin, HL spot balances. For on-chain token balances use `acp wallet balance` | — | — |
 | `trade withdraw-from-hl` | Withdraw USDC from HL L1 (settles to Arbitrum; `--to-chain` bridges onward) | `--amount` | `--destination`, `--to-chain`, `--dry-run` |
 

@@ -1,8 +1,17 @@
 import {
   STREAMS,
   type IEvmProviderAdapter,
+  type ISolanaProviderAdapter,
 } from "@virtuals-protocol/acp-node-v2";
-import { createProviderAdapter, createSseTransport } from "./agentFactory";
+import {
+  createProviderAdapter,
+  createSolanaProviderAdapter,
+  createSseTransport,
+} from "./agentFactory";
+
+interface ApprovalGateOptions {
+  json?: boolean;
+}
 
 interface ApprovalGateOptions {
   json?: boolean;
@@ -24,6 +33,17 @@ export async function withApprovalGate<T>(
     }
     restoreApprovalConsole();
   }
+}
+
+// Solana wallet operations sign + broadcast through the ACP server proxy /
+// Privy directly (no EVM-style approval SSE stream), so this simply builds the
+// Solana provider for the resolved chainId and runs the operation.
+export async function withSolanaWallet<T>(
+  chainId: number,
+  fn: (provider: ISolanaProviderAdapter) => Promise<T>
+): Promise<T> {
+  const provider = await createSolanaProviderAdapter(chainId);
+  return fn(provider);
 }
 
 function emitApprovalUrlToStderr(url: string): void {

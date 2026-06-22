@@ -24,6 +24,10 @@
 // `acp trade hl-status` shows HL ACCOUNT positions/margin/balances (read-only).
 // It is HL-only — for on-chain token balances use `acp wallet balance`.
 //
+// `acp trade stock-list [symbol]` is read-only discovery: with no symbol it
+// lists the spot markets (tokenized stocks + the Hyperliquid spot order book);
+// with a symbol it lists every route for that asset with ready-to-run flags.
+//
 // Spot amount semantics mirror a swap: a BUY (--token-in usdc) spends --amount-in
 // USDC (size derived from price, never overspends); a SELL (--token-out usdc)
 // sells --amount-in token units.
@@ -44,9 +48,11 @@ import type { Command } from "commander";
 import type { Address } from "viem";
 import { isJson, isTTY, outputError, outputResult } from "../lib/output";
 import { CliError, type ErrorCode } from "../lib/errors";
-import { getApiContext } from "../lib/api/client";
+import { getApiContext, forceTokenRefresh } from "../lib/api/client";
 import {
   createProviderAdapter,
+  createSolanaProviderAdapter,
+  getSolanaWalletAddress,
   getWalletAddress,
 } from "../lib/agentFactory";
 import { withApprovalGate } from "../lib/walletGate";
@@ -69,12 +75,72 @@ interface SendAction {
 interface SignAction {
   kind: "sign";
   label: string;
-  sigType: "personal" | "eip712";
+  // solana-message: ed25519 over the UTF-8 bytes of `message`, posted back
+  //   BASE64-encoded (Treasures' ownership-proof contract — not base58).
+  // solana-tx: sign the serialized versioned tx in `txBase64` WITHOUT
+  //   broadcasting; post back the fully-signed tx, base64 (the server or the
+  //   venue broadcasts the signed bytes).
+  sigType: "personal" | "eip712" | "solana-message" | "solana-tx";
   chainId: number;
-  message?: string; // personal_sign
+  message?: string; // personal_sign / solana-message
   typedData?: unknown; // EIP-712
+  txBase64?: string; // solana-tx
   expectedSignKind?: string;
   timeoutMs?: number;
+}
+
+// The methods the trade loop needs from the Privy Solana adapter. They exist
+// at runtime on PrivySolanaProviderAdapter; the published .d.ts lags behind,
+// hence the local shape + cast at the create site.
+type SolanaTradeSigner = {
+  signMessage(message: string): Promise<string>; // base58-encoded signature
+  signTransactionViaPrivy(txBase64: string): Promise<string>; // signed tx, base64
+};
+
+// Solana Privy chain ids. Trade legs are always mainnet — Treasures staging
+// settles against mainnet, and LiFi Solana legs are mainnet-only — but the
+// devnet id is still a valid Solana reference a caller might pass (it's what
+// `wallet sol balance` shows on testnet), so isSolanaChainRef accepts both.
+const SOLANA_MAINNET_PRIVY_CHAIN_ID = 501;
+const SOLANA_DEVNET_PRIVY_CHAIN_ID = 500;
+
+// Every chain reference that means Solana, normalized to one check: the name
+// aliases, the LiFi chain id, and the Privy chain ids (500 devnet / 501 mainnet)
+// that `wallet sol` surfaces. Case-insensitive. Used both to detect a Solana
+// source/venue and to decide whether to attach solWallet — keep it the single
+// source of truth so no spelling slips through and silently drops the wallet.
+function isSolanaChainRef(v: unknown): boolean {
+  if (v === undefined) return false;
+  const s = String(v).trim().toLowerCase();
+  return (
+    s === "sol" ||
+    s === "solana" ||
+    s === "1151111081099710" ||
+    s === String(SOLANA_MAINNET_PRIVY_CHAIN_ID) ||
+    s === String(SOLANA_DEVNET_PRIVY_CHAIN_ID)
+  );
+}
+
+// Minimal base58 decode (Solana alphabet) — the adapter returns base58
+// signatures but the trade wire format is base64 of the raw bytes.
+const B58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+function base58Decode(s: string): Uint8Array {
+  let n = 0n;
+  for (const c of s) {
+    const i = B58_ALPHABET.indexOf(c);
+    if (i < 0) throw new Error(`invalid base58 character: ${c}`);
+    n = n * 58n + BigInt(i);
+  }
+  const bytes: number[] = [];
+  while (n > 0n) {
+    bytes.unshift(Number(n & 0xffn));
+    n >>= 8n;
+  }
+  for (const c of s) {
+    if (c === "1") bytes.unshift(0);
+    else break;
+  }
+  return Uint8Array.from(bytes);
 }
 interface WaitAction {
   kind: "wait";
@@ -213,6 +279,27 @@ export function registerTradeCommands(program: Command): void {
       }
     });
 
+  // ── stock-list (discovery) ────────────────────────────────────────────────────
+  // The read-only counterpart to `acp trade`: what's tradable, and how. With no
+  // symbol it lists the spot markets — tokenized stocks AND the Hyperliquid spot
+  // order book. With a SYMBOL it lists every executable route for that one asset
+  // (perp / HL spot / tokenized stock / token swap), each with ready-to-run flags.
+  trade
+    .command("stock-list [symbol]")
+    .description(
+      "List what's tradable. With no symbol: the spot markets — tokenized stocks " +
+        "plus Hyperliquid spot. With a SYMBOL (e.g. AAPL, BTC): every route for " +
+        "that asset with ready-to-run flags."
+    )
+    .action(async (symbol, _opts, cmd) => {
+      const json = isJson(cmd);
+      try {
+        await runInstruments(symbol, json);
+      } catch (err) {
+        outputError(json, err instanceof Error ? err : String(err));
+      }
+    });
+
   // ── hl-status ───────────────────────────────────────────────────────────────
   trade
     .command("hl-status")
@@ -296,6 +383,51 @@ async function runTrade(opts: Record<string, unknown>, json: boolean): Promise<v
   if (opts.isolated) body.isolated = true;
   if (opts.dryRun) body.dryRun = true;
 
+  // Attach the agent's Solana pubkey whenever the request could route through
+  // Solana: an explicit sol venue/source/destination, or a tokenized-stock BUY
+  // with no venue pinned — the backend then quotes both venues and executes the
+  // better one. A Solana --chain-out also needs it: the agent's pubkey is the
+  // bridge/swap recipient.
+  //
+  // The unpinned-buy clause is defined POSITIVELY to avoid roping in unrelated
+  // shapes: a Treasures buy is --token plus a spend amount — either --amount-usdc
+  // (buy on Ethereum) or --amount-in (buy funded from another chain). Requiring a
+  // spend signal excludes perps (--side/--size) and malformed shapes like
+  // `--token BTC --size 0.01` that carry neither. It must also NOT be a sell
+  // (--amount-shares) and must leave the venue unpinned (no --chain), so a venue
+  // the user pinned (e.g. --chain eth) is honored rather than silently overridden
+  // by the backend quoting sol; an explicit --chain sol still routes via the
+  // isSolanaChainRef(opts.chain) clause above. Sells stay explicit (the backend
+  // can't see which venue holds the shares), so they only get the wallet when a
+  // Solana chain ref is passed.
+  const isUnpinnedTokenBuy =
+    opts.token !== undefined &&
+    (opts.amountUsdc !== undefined || opts.amountIn !== undefined) &&
+    opts.side === undefined &&
+    opts.amountShares === undefined &&
+    opts.chain === undefined;
+  const solanaExplicit =
+    isSolanaChainRef(opts.chain) ||
+    isSolanaChainRef(opts.chainIn) ||
+    isSolanaChainRef(opts.chainOut);
+  const couldRouteViaSolana = solanaExplicit || isUnpinnedTokenBuy;
+  if (couldRouteViaSolana) {
+    try {
+      body.solWallet = await getSolanaWalletAddress();
+    } catch (err) {
+      // A speculative unpinned buy can proceed without a Solana wallet — the
+      // backend simply won't quote the sol venue. But only the genuine "this
+      // agent has no Solana wallet" signal is safe to swallow: a real failure
+      // (network, auth, agent lookup) must surface rather than masquerade as
+      // "no wallet" and silently drop the pubkey the backend needs. For an
+      // explicit Solana route the wallet is mandatory, so any error — including
+      // no-wallet — propagates instead of planning a route that can't sign.
+      const noSolWallet =
+        err instanceof CliError && err.code === "NO_SOLANA_WALLET";
+      if (solanaExplicit || !noSolWallet) throw err;
+    }
+  }
+
   const plan: PlanResponse = await post(apiUrl, token, "/trade/plan", body);
   progress(
     json,
@@ -303,7 +435,11 @@ async function runTrade(opts: Record<string, unknown>, json: boolean): Promise<v
       (plan.direction && plan.route ? ` (${plan.direction} via ${plan.route})` : "")
   );
   const result = opts.dryRun
-    ? await runTradeLoop(apiUrl, token, await createProviderAdapter(), plan, json)
+    ? // A dry run signs and submits nothing — the server returns a `preview`
+      // action and runTradeLoop returns immediately — so skip building the
+      // signer entirely. This lets `--dry-run` work on agents with no signer
+      // registered (and avoids the approval gate's signer requirement).
+      await runTradeLoop(apiUrl, token, undefined, plan, json)
     : await withApprovalGate(
         (provider) => runTradeLoop(apiUrl, token, provider, plan, json),
         { json }
@@ -314,12 +450,38 @@ async function runTrade(opts: Record<string, unknown>, json: boolean): Promise<v
 export async function runTradeLoop(
   url: string,
   token: string,
-  provider: IEvmProviderAdapter,
+  // Undefined for a dry run: the server returns a `preview` action that returns
+  // before any send/sign, so no signer is needed. Execution branches assert it.
+  provider: IEvmProviderAdapter | undefined,
   plan: PlanResponse,
   json: boolean
 ): Promise<Record<string, unknown>> {
+  // The access token is captured once, but a long trade (e.g. an HL-exit's
+  // multi-minute settle wait) can outlive its TTL. On a 401, mint a fresh token
+  // and keep using it for the rest of the loop, so the trade doesn't die just
+  // because the token expired mid-flight.
+  let currentToken = token;
+  const onAuthRefresh = async (): Promise<string> => {
+    currentToken = await forceTokenRefresh(url);
+    return currentToken;
+  };
+  // Any branch that actually signs/broadcasts requires the signer; a dry run
+  // never reaches them. Fail loud rather than deref undefined if it ever does.
+  const requireSigner = (): IEvmProviderAdapter => {
+    if (!provider) {
+      throw new CliError(
+        "A signer is required to execute this trade.",
+        "NO_SIGNER",
+        "Run `acp agent add-signer` to register a signing key.",
+      );
+    }
+    return provider;
+  };
   let action = plan.action;
   let step = plan.step;
+  // Created on the first Solana sign action and reused for the trade's
+  // remaining legs (proof + tx legs share one adapter).
+  let solSigner: SolanaTradeSigner | undefined;
 
   while (true) {
     if (action.kind === "done") return action.result;
@@ -348,7 +510,7 @@ export async function runTradeLoop(
     if (action.kind === "send") {
       progress(json, `[step ${step + 1}] ${action.label}`);
       try {
-        const txHash = await provider.sendTransaction(action.chainId, {
+        const txHash = await requireSigner().sendTransaction(action.chainId, {
           to: action.to as `0x${string}`,
           data: action.data as `0x${string}`,
           ...(action.value && action.value !== "0"
@@ -366,15 +528,33 @@ export async function runTradeLoop(
       }
     } else if (action.kind === "sign") {
       // The server asks the CLI to produce a signature (NOT broadcast a tx):
-      // an EIP-191 personal_sign or an EIP-712 typed-data signature. We sign
-      // with the keystore-backed signer and post the signature back. Used by
-      // the Treasures flow (ownership proof + Fusion orders the server submits).
+      // EIP-191 personal_sign, EIP-712 typed data, or — for Solana trade legs
+      // — an ed25519 message signature / a signed versioned transaction. We
+      // sign with the keystore/Privy-backed signer and post the result back;
+      // the server submits/broadcasts. Used by the Treasures flow (ownership
+      // proofs + orders) and Solana-source LiFi bridges.
       progress(json, `[step ${step + 1}] ${action.label}`);
       try {
-        const signature =
-          action.sigType === "eip712"
-            ? await provider.signTypedData(action.chainId, action.typedData)
-            : await provider.signMessage(action.chainId, action.message ?? "");
+        let signature: string;
+        if (action.sigType === "solana-message" || action.sigType === "solana-tx") {
+          solSigner ??= (await createSolanaProviderAdapter(
+            SOLANA_MAINNET_PRIVY_CHAIN_ID
+          )) as unknown as SolanaTradeSigner;
+          if (action.sigType === "solana-message") {
+            // Privy signs the raw bytes (no envelope); the adapter returns
+            // base58 but the wire contract is base64 of the raw signature.
+            const b58 = await solSigner.signMessage(action.message ?? "");
+            signature = Buffer.from(base58Decode(b58)).toString("base64");
+          } else {
+            // Sign the serialized versioned tx WITHOUT broadcasting — the
+            // server (LiFi legs) or the venue (Treasures) broadcasts it.
+            signature = await solSigner.signTransactionViaPrivy(action.txBase64 ?? "");
+          }
+        } else if (action.sigType === "eip712") {
+          signature = await requireSigner().signTypedData(action.chainId, action.typedData);
+        } else {
+          signature = await requireSigner().signMessage(action.chainId, action.message ?? "");
+        }
         nextBody = { tradeId: plan.tradeId, step, signature };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -401,14 +581,34 @@ export async function runTradeLoop(
     // reported an already-completed deposit as failed.
     const next: NextResponse = await post(
       url,
-      token,
+      currentToken,
       "/trade/next",
       nextBody,
-      action.kind === "wait"
+      action.kind === "wait",
+      onAuthRefresh
     );
     action = next.action;
     step = next.step;
   }
+}
+
+// ---------- Discovery ----------
+
+// Read-only: GET /trade/instruments. With a symbol the backend returns the
+// executable routes for that asset; without one, the spot-market catalog
+// (tokenized stocks + Hyperliquid spot). Either way the CLI just prints what it
+// gets back — no routing, no signing.
+async function runInstruments(
+  symbol: string | undefined,
+  json: boolean
+): Promise<void> {
+  const { apiUrl, token } = await getApiContext();
+  const path =
+    symbol && symbol.trim()
+      ? `/trade/instruments?symbol=${encodeURIComponent(symbol.trim())}`
+      : "/trade/instruments";
+  const result = await get<Record<string, unknown>>(apiUrl, token, path);
+  outputResult(json, result);
 }
 
 // ---------- Hyperliquid account ----------
@@ -434,13 +634,23 @@ async function runStatus(json: boolean): Promise<void> {
 // whether the server consumed the original before the connection died.
 const TRANSIENT_STATUS = new Set([502, 503, 504]);
 const TRANSIENT_RETRY_DELAYS_MS = [2_000, 5_000, 10_000];
+// Hard per-request ceiling. Without it `fetch` waits forever on a stalled
+// connection — which froze the trade loop indefinitely mid-trade (a /trade/next
+// call neither returned nor threw, so the retry below never fired and the loop
+// hung). With a timeout, a stall throws → it retries (for `wait` polls) or
+// surfaces a clean error instead of hanging. Generous for slow legitimate calls
+// (e.g. a LiFi quote inside /trade/next) but bounded.
+const REQUEST_TIMEOUT_MS = 120_000;
 
 async function post<T>(
   baseUrl: string,
   token: string,
   path: string,
   body: unknown,
-  retryTransient = false
+  retryTransient = false,
+  // Called once on a 401 to mint a fresh access token (a long trade can outlive
+  // the token captured at the start). Returns the new token to retry with.
+  onAuthRefresh?: () => Promise<string>
 ): Promise<T> {
   const base = baseUrl.replace(/\/$/, "");
   // Calldata to sign flows back over this connection, so refuse plaintext: a
@@ -452,6 +662,8 @@ async function post<T>(
       "The ACP API base URL must be https://."
     );
   }
+  let tok = token;
+  let refreshedAuth = false;
   for (let attempt = 0; ; attempt++) {
     const canRetry = retryTransient && attempt < TRANSIENT_RETRY_DELAYS_MS.length;
     let res: Response;
@@ -460,17 +672,36 @@ async function post<T>(
         method: "POST",
         headers: {
           "content-type": "application/json",
-          authorization: `Bearer ${token}`,
+          authorization: `Bearer ${tok}`,
         },
         body: JSON.stringify(body),
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
     } catch (err) {
-      // Network-level failure (connection reset/refused) — same class as a 502.
+      // Network-level failure (connection reset/refused) OR a timeout (stalled
+      // connection) — same class as a 502, so retry transient calls.
+      const timedOut =
+        err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError");
       if (canRetry) {
         await sleep(TRANSIENT_RETRY_DELAYS_MS[attempt]);
         continue;
       }
+      if (timedOut) {
+        throw new CliError(
+          `Request to ${path} timed out after ${REQUEST_TIMEOUT_MS / 1000}s (no response).`,
+          "TIMEOUT",
+          "Re-run the command — the request stalled rather than failing, and is safe to retry.",
+        );
+      }
       throw err;
+    }
+    // Token expired mid-trade → refresh once and retry with the new token. Not
+    // a transient retry, so it doesn't consume a transient slot.
+    if (res.status === 401 && onAuthRefresh && !refreshedAuth) {
+      tok = await onAuthRefresh();
+      refreshedAuth = true;
+      attempt--;
+      continue;
     }
     if (!res.ok) {
       if (canRetry && TRANSIENT_STATUS.has(res.status)) {
@@ -498,6 +729,55 @@ async function post<T>(
     }
     return (await res.json()) as T;
   }
+}
+
+// Read-only GET (discovery). No body and no retry: a failed read just surfaces,
+// it never half-applies like a send/sign post could. Shares post()'s https
+// guard and error-body parsing so failures read the same to the caller.
+async function get<T>(baseUrl: string, token: string, path: string): Promise<T> {
+  const base = baseUrl.replace(/\/$/, "");
+  if (!/^https:\/\//i.test(base)) {
+    throw new CliError(
+      `Refusing to call a non-https trade endpoint: ${base}`,
+      "VALIDATION_ERROR",
+      "The ACP API base URL must be https://."
+    );
+  }
+  let res: Response;
+  try {
+    res = await fetch(base + path, {
+      method: "GET",
+      headers: { authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+  } catch (err) {
+    if (err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError")) {
+      throw new CliError(
+        `Request to ${path} timed out after ${REQUEST_TIMEOUT_MS / 1000}s (no response).`,
+        "TIMEOUT",
+        "Re-run the command — the request stalled rather than failing, and is safe to retry.",
+      );
+    }
+    throw err;
+  }
+  if (!res.ok) {
+    const raw = await res.text();
+    let parsed: { error?: string; code?: string; recovery?: string } | string;
+    try {
+      parsed = JSON.parse(raw) as { error?: string; code?: string; recovery?: string };
+    } catch {
+      parsed = raw;
+    }
+    const message =
+      typeof parsed === "string"
+        ? `${res.status} ${res.statusText}: ${parsed}`
+        : `${res.status} ${res.statusText}: ${parsed.error ?? "unknown"}`;
+    const code =
+      typeof parsed === "object" && parsed.code ? parsed.code : `HTTP_${res.status}`;
+    const recovery = typeof parsed === "object" ? parsed.recovery : undefined;
+    throw new CliError(message, isKnownCode(code) ? code : "API_ERROR", recovery);
+  }
+  return (await res.json()) as T;
 }
 
 const KNOWN_CODES = new Set<string>([

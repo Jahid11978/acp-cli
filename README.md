@@ -14,7 +14,7 @@ The CLI is organized around two pillars. They're independent — use whichever (
 
 Operate an agent as a first-class economic actor, even if you never touch the marketplace.
 
-- **[Wallet](#wallet)** — EVM wallet per agent, with balances, message/typed-data signing, transaction broadcast, and on-ramp topup via Coinbase, card, or QR.
+- **[Wallet](#wallet)** — EVM wallet per agent, with balances, message/typed-data signing, transaction broadcast, and on-ramp topup via Coinbase, card, or QR. Plus a Solana wallet (`wallet sol`) for SOL/SPL balances, transfers, and message signing.
 - **[Agent Email](#agent-email)** — provision a dedicated inbox for the agent, send/receive/search mail, view threads, extract OTPs and links, download attachments.
 - **[Agent Card](#agent-card)** — issue single-use virtual cards backed by agentcard.ai using a spend-request model with Stripe-attached payment methods, spend limits, and 3DS challenge handling.
 - **[Signers](#agent-management)** — P256 keys stored in the OS keychain, approved via browser flow.
@@ -257,8 +257,13 @@ Shows the supported chain IDs and network names based on the current environment
 # Show configured wallet address
 acp wallet address
 
-# Show token balances
+# Show token balances. With no flags, shows every sponsored EVM chain plus
+# Solana for the current environment, grouped by chain.
+acp wallet balance
+# Narrow to one EVM chain:
 acp wallet balance --chain-id 8453
+# Solana only (chain id 500/501 or --cluster):
+acp wallet balance --cluster mainnet
 
 # Sign a plaintext message (no dashboard prerequisites)
 acp wallet sign-message --message "hello world" --chain-id 8453
@@ -287,6 +292,35 @@ acp wallet topup --chain-id 8453 --method card --amount 50 --email user@example.
 # 3. Manual transfer (QR) — shows wallet address + QR code to scan
 acp wallet topup --chain-id 8453 --method qr
 ```
+
+#### Solana wallet (`wallet sol`)
+
+The agent's Privy wallet also holds a Solana address (signed by the same key). Solana operations live under `wallet sol`. The cluster is implied by the environment (`IS_TESTNET` → devnet, otherwise mainnet) with an optional `--cluster devnet|mainnet` override — there's no `--chain-id` here. (Balances also appear in the unified `acp wallet balance` view alongside EVM chains; `wallet sol balance` is a Solana-only shortcut.)
+
+```bash
+# Show the agent's Solana address
+acp wallet sol address
+
+# SOL + SPL token balances (same formatting as `acp wallet balance`)
+acp wallet sol balance
+
+# Sign a plaintext message (returns a base58 signature)
+acp wallet sol sign-message --message "hello world"
+
+# Send SOL (amount is in SOL)
+acp wallet sol transfer --to <recipient> --amount 0.01
+
+# Send an SPL token (amount in token units; the recipient's token account is
+# created automatically if it doesn't exist yet)
+acp wallet sol transfer --to <recipient> --amount 1 --token <mint>
+
+# Send a raw instruction set (advanced) — JSON array of
+# { programAddress, accounts: [{ address, role }], data } (data is base64 or 0x-hex;
+# role is writable_signer | writable | readonly_signer | readonly)
+acp wallet sol send-instructions --instructions '[{"programAddress":"…","accounts":[],"data":"<base64>"}]'
+```
+
+`transfer`, `sign-message`, and `send-instructions` require a signer (`acp agent add-signer`); they sign through the ACP server. `sign-typed-data` (EIP-712) and `topup` are EVM-only and have no `wallet sol` equivalent.
 
 ### Wallet Policies
 
@@ -658,14 +692,40 @@ Each event line includes the job ID, chain ID, status, your roles, available act
 | EVM         | **1337**    | **Deposit** USDC into Hyperliquid            |
 | **1337**    | **1337**    | **Spot** order on the Hyperliquid order book |
 | **1337**    | EVM         | **Withdraw** USDC from Hyperliquid           |
+| **Solana**  | EVM         | **Swap** out of Solana (USDC@sol → an EVM token) |
 
-Perps are the one exception — a leveraged position isn't a token conversion, so they use `--side long|short` (with `--token`). Hyperliquid's perp markets span more than crypto: you can take leveraged positions on **stocks/equities, currencies/FX, and commodities** too, all through the same `--side`/`--token` flags. Running `acp trade` bare in a terminal opens an interactive picker (humans only).
+Two intents don't use the chain-pair shape:
+
+- **Perps** — `--side long|short` (with `--token`). Leveraged positions on **crypto, stocks/equities, FX/currencies, and commodities**.
+- **Tokenized stocks (spot)** — `--token <TICKER>` plus `--amount-usdc` (buy) or `--amount-shares` (sell), and **no `--side`**. Buys/sells real tokenized equity (you own the share token), distinct from an equity *perp*. The backend auto-picks the venue/chain.
+
+> **Stock vs perp routes by FLAG, not the ticker.** `AAPL` is both a tokenized stock and an HL equity perp — `--amount-usdc`/`--amount-shares` (no `--side`) buys the spot stock; `--side` opens the leveraged perp.
+
+Running `acp trade` bare in a terminal opens an interactive picker (humans only).
 
 **Auto-balancing.** Hyperliquid keeps perp (collateral) and spot USDC in separate wallets, and deposits land in the *perp* wallet. You don't have to manage that: before an HL order the CLI checks the funding wallet and, if it's short, moves the shortfall over automatically (perp→spot for a spot buy, spot→perp for a perp). It's an instant, free L1 transfer — agents never think about sub-wallets.
 
 Swaps, deposits, and HL spot/perp/withdraw all run through the **ACP backend**, which picks the route and builds each transaction; the CLI signs and broadcasts with your keystore-backed signer — **no per-transaction prompt**. Private keys never leave the OS keystore.
 
 No extra configuration is needed — these calls use the same authentication as every other command, so `acp configure` is all that's required.
+
+**Discovering what's tradable (`acp trade stock-list`):**
+
+Read-only discovery — no signing, no funds moved. Run it with **no symbol** to list the spot markets, or with a **symbol** to see every route for one asset.
+
+```bash
+# List the spot markets: tokenized stocks + the Hyperliquid spot order book
+acp trade stock-list
+
+# Every route for one asset, each naming the exact ticker to pass
+acp trade stock-list AAPL
+```
+
+With no symbol you get `{ stocks, hlSpot }` — `stocks` is the tokenized-stock catalog (`symbol`, `name`, `protocols`), `hlSpot` is the HL order book (`token`, `pair`). A `warnings` field appears only if one venue's catalog is temporarily unavailable.
+
+With a symbol you get `{ symbol, name?, routes }`, where each route is `{ kind, label, token, maxLeverage? }`. **`token` is the exact ticker string to pass** — e.g. an HL equity perp must be quoted `xyz:AAPL`, while the spot routes use bare `AAPL`. The route tells you *what's possible and which ticker*; the flags for each (`--side`, `--amount-usdc`, …) are documented above.
+
+> **Funding is flexible — `stock-list` never implies you must pre-hold USDC on Hyperliquid.** USDC is the *settlement* currency, not a prerequisite. You can fund any trade with any supported token on any supported chain (Ethereum, Base, Arbitrum, Solana, …) via `--token-in`/`--chain-in`; the backend bridges, swaps, and (for HL) deposits as needed to settle in one command.
 
 **Swaps (same-chain and cross-chain):**
 
@@ -690,6 +750,21 @@ Bridging USDC to chain `1337` credits your Hyperliquid account (keyed by the sam
 
 The command **blocks until the bridge settles** — it signs the source-chain tx, then the server polls the bridge every 10s. Typically **~10–30s** (the Relay route into HL is near-instant); the poll cap is **10 minutes** for slower routes. You may see a poll cycle or two even on a fast bridge while LiFi indexes the source tx — that's normal, not a failure.
 
+**Tokenized stocks (spot buy/sell):**
+
+Buy or sell real tokenized equities. Spot — you receive the share token, no leverage or funding. The backend auto-routes the venue and chain; you never specify one. Buys can spend USDC you already hold or be funded from another chain (it bridges first). Sells need an explicit `--chain eth|sol` (the server can't see which chain holds your shares).
+
+```bash
+# Buy $5 of AAPL with USDC you hold (venue auto-picked)
+acp trade --token AAPL --amount-usdc 5
+
+# Buy funded from another chain — bridges VIRTUAL@Base → USDC, then buys
+acp trade --token AAPL --token-in virtual --chain-in 8453 --amount-in 8
+
+# Sell 0.01 AAPL shares (delivers USDC; --chain required on sells)
+acp trade --token AAPL --amount-shares 0.01 --chain sol
+```
+
 **Hyperliquid — perps:**
 
 Hyperliquid perps aren't limited to crypto — it lists leveraged perp markets across **crypto, equities/stocks, FX/currencies, and commodities**. The command is the same for all of them: pass the Hyperliquid market symbol as `--token`, and `--side`, `--size`, and (optionally) `--leverage` work identically regardless of asset class.
@@ -712,8 +787,8 @@ acp trade --side short --token BTC --size 0.01 --reduce-only
 
 ```bash
 # Show Hyperliquid ACCOUNT status ONLY — HL perp positions, margin, and HL spot balances.
-# This is the one HL-specific read. For on-chain token balances on any EVM chain
-# (Ethereum, Arbitrum, Base, …), use `acp wallet balance --chain-id <id>` instead.
+# This is the one HL-specific read. For on-chain token balances
+# EVM chains + Solana), use `acp wallet balance` instead.
 acp trade hl-status
 
 # Withdraw USDC off Hyperliquid (settles to Arbitrum; --to-chain bridges onward)
