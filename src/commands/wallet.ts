@@ -17,6 +17,7 @@ import type {
   StockPosition,
   TokenInfo,
   HyperliquidBalanceSummary,
+  HyperliquidSpotBalance,
   HyperliquidPerpPosition,
 } from "../lib/api/agent";
 import { CliError } from "../lib/errors";
@@ -131,16 +132,25 @@ function hlPosition(p: HyperliquidPerpPosition): {
   return { coin, size, entry, value, upnl: hlNum(pos.unrealizedPnl) };
 }
 
+// A spot balance worth showing — a strictly positive total. Used as the single
+// source of truth across the "has data" check, the TTY table, and the piped
+// output so a wallet of all-zero spot rows never renders an empty HL block in
+// the terminal while still emitting zero rows to scripts.
+function hlSpotNonZero(b: HyperliquidSpotBalance): boolean {
+  const t = hlNum(b.total);
+  return t !== null && parseFloat(t) > 0;
+}
+
 // Only render the Hyperliquid section when there's something to show — an
-// account value, a spot balance, or an open position. Mirrors how stock
-// positions stay hidden when empty.
+// account value, a non-zero spot balance, or an open position. Mirrors how
+// stock positions stay hidden when empty.
 function hlHasData(
   hl?: HyperliquidBalanceSummary | null
 ): hl is HyperliquidBalanceSummary {
   if (!hl) return false;
   return (
     hl.balanceUsd != null ||
-    (hl.spotBalances?.length ?? 0) > 0 ||
+    (hl.spotBalances ?? []).some(hlSpotNonZero) ||
     (hl.positions?.length ?? 0) > 0
   );
 }
@@ -162,10 +172,7 @@ function printHyperliquid(hl?: HyperliquidBalanceSummary | null): void {
     )}`
   );
 
-  const spot = (hl.spotBalances ?? []).filter((b) => {
-    const t = hlNum(b.total);
-    return t !== null && parseFloat(t) > 0;
-  });
+  const spot = (hl.spotBalances ?? []).filter(hlSpotNonZero);
   if (spot.length) {
     console.log(`\n  ${c.dim("SPOT")}`);
     console.log(
@@ -405,7 +412,7 @@ function renderBalances(opts: {
           hyperliquid.source
         }\thl`
       );
-      for (const b of hyperliquid.spotBalances ?? []) {
+      for (const b of (hyperliquid.spotBalances ?? []).filter(hlSpotNonZero)) {
         console.log(
           `${b.coin ?? b.token ?? "—"}\t${hlNum(b.total) ?? "—"}\t${
             hlNum(b.hold) ?? "—"
