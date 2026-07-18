@@ -1,10 +1,62 @@
-import { erc20Abi, formatEther } from "viem";
+import { erc20Abi, formatEther, formatUnits, parseUnits } from "viem";
 import { createAgentFromConfig } from "./agentFactory";
-import { EvmAcpClient } from "@virtuals-protocol/acp-node-v2";
+import {
+  EvmAcpClient,
+  getSplTokenBalance,
+  type ISolanaProviderAdapter,
+} from "@virtuals-protocol/acp-node-v2";
+import type {
+  AgentApi,
+  PrepareLaunchResponse,
+  SolanaPrepareLaunchResponse,
+} from "./api/agent";
+import { toSolanaInstructionLike, type SolAddr } from "./solana";
+import { isSolanaChainId } from "./chains";
+import { withApprovalGate } from "./walletGate";
+import { CliError } from "./errors";
 
-function getEvmProvider() {
+export interface TokenizeParams {
+  agentId: string;
+  chainId: number;
+  symbol: string;
+  antiSniperTaxType?: number;
+  needAcf?: boolean;
+  isProject60days?: boolean;
+  airdropPercent?: number;
+  isRobotics?: boolean;
+  prebuyVirtualBaseUnit: bigint;
+  onProgress?: (message: string) => void;
+}
+
+export interface EvmTokenizeParams extends TokenizeParams {
+  walletAddress: string;
+}
+
+export interface TokenizeResult {
+  virtualId: number;
+  txHash: string;
+  launchFee: string;
+}
+
+export function convertPrebuyVirtual(
+  raw: string,
+  chainId: number
+): bigint | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return 0n;
+  if (!/^\d*\.?\d+$/.test(trimmed)) return null;
+  try {
+    const decimals = isSolanaChainId(chainId) ? 9 : 18;
+    const base = parseUnits(trimmed as `${number}`, decimals);
+    return base < 0n ? null : base;
+  } catch {
+    return null;
+  }
+}
+
+function getEvmProvider(chainId: number) {
   return createAgentFromConfig().then((agent) => {
-    const client = agent.getClient();
+    const client = agent.getClient(chainId);
     if (!(client instanceof EvmAcpClient)) {
       throw new Error("Only EVM chains are supported for tokenization.");
     }
@@ -18,7 +70,7 @@ export async function checkVirtualBalance(
   wallet: string,
   requiredWei: string
 ): Promise<void> {
-  const provider = await getEvmProvider();
+  const provider = await getEvmProvider(chainId);
   const balance = (await provider.readContract(chainId, {
     abi: erc20Abi,
     address: virtualToken as `0x${string}`,
@@ -64,7 +116,7 @@ export async function sendApprove(
   virtualTokenAddress: string,
   approveCalldata: string
 ): Promise<string> {
-  const provider = await getEvmProvider();
+  const provider = await getEvmProvider(chainId);
   const txHash = await provider.sendTransaction(chainId, {
     to: virtualTokenAddress as `0x${string}`,
     data: approveCalldata as `0x${string}`,
@@ -79,7 +131,7 @@ export async function sendPreLaunch(
   bondingV5Address: string,
   preLaunchCalldata: string
 ): Promise<string> {
-  const provider = await getEvmProvider();
+  const provider = await getEvmProvider(chainId);
   const txHash = await provider.sendTransaction(chainId, {
     to: bondingV5Address as `0x${string}`,
     data: preLaunchCalldata as `0x${string}`,
@@ -87,4 +139,219 @@ export async function sendPreLaunch(
 
   await waitForReceipt(provider, chainId, txHash as `0x${string}`);
   return txHash;
+}
+
+export async function tokenizeOnSolana(
+  agentApi: AgentApi,
+  params: TokenizeParams,
+  json?: boolean
+): Promise<TokenizeResult> {
+  const {
+    agentId,
+    chainId,
+    symbol,
+    antiSniperTaxType,
+    needAcf,
+    isProject60days,
+    airdropPercent,
+    isRobotics,
+    prebuyVirtualBaseUnit,
+    onProgress,
+  } = params;
+
+  let solanaLaunch: SolanaPrepareLaunchResponse;
+  try {
+    onProgress?.("\nPreparing token launch...");
+    solanaLaunch = await agentApi.prepareSolanaLaunch(
+      agentId,
+      chainId,
+      symbol,
+      antiSniperTaxType,
+      needAcf,
+      isProject60days,
+      airdropPercent,
+      isRobotics,
+      prebuyVirtualBaseUnit > 0n ? prebuyVirtualBaseUnit.toString() : undefined
+    );
+  } catch (err) {
+    throw new Error(
+      `Failed to prepare launch: ${
+        err instanceof Error ? err.message : String(err)
+      }`
+    );
+  }
+
+  let signature: string;
+  try {
+    onProgress?.("Launching token onchain...");
+
+    if (!json && needAcf) {
+      console.log(
+        `Launch fee (with ACF): ${BigInt(solanaLaunch.launchFee) / BigInt(1e9)} VIRTUAL`
+      );
+    }
+    if (!json && isRobotics) {
+      console.log(`Robotics Launch: enabled (Eastworld eligibility).`);
+    }
+
+    const ixs = solanaLaunch.instructions.map(toSolanaInstructionLike);
+    const result = await withApprovalGate(
+      async (provider: ISolanaProviderAdapter) => {
+        // Preflight parity with the EVM path's checkVirtualBalance: the
+        // wallet must cover launch fee + prebuy in the quote token (VIRTUAL,
+        // 9 decimals on Solana) BEFORE broadcasting, so an underfunded
+        // launch fails with a clear verdict instead of an on-chain error.
+        // A missing token account reads as zero.
+        const required =
+          BigInt(solanaLaunch.launchFee) + prebuyVirtualBaseUnit;
+        const owner = (await provider.getAddress()) as SolAddr;
+        const { amount, decimals } = await getSplTokenBalance(
+          provider.getRpc(),
+          owner,
+          solanaLaunch.quoteMint as SolAddr
+        );
+        if (amount < required) {
+          throw new CliError(
+            `Insufficient VIRTUAL balance. Need ${formatUnits(
+              required,
+              decimals
+            )}, have ${formatUnits(amount, decimals)}.`,
+            "VALIDATION_ERROR"
+          );
+        }
+        return provider.sendInstructions(ixs);
+      },
+      { chainId, sponsored: false }
+    );
+
+    // last instruction for token launch result
+    signature = Array.isArray(result) ? result[result.length - 1] : result;
+  } catch (err) {
+    // Preflight verdicts are already user-facing; don't wrap them.
+    if (err instanceof CliError) throw err;
+    throw new Error(`Failed to launch token: ${err}`);
+  }
+
+  return {
+    virtualId: solanaLaunch.virtualId,
+    txHash: signature,
+    launchFee: solanaLaunch.launchFee,
+  };
+}
+
+export async function tokenizeOnEvm(
+  agentApi: AgentApi,
+  params: EvmTokenizeParams,
+  json?: boolean
+): Promise<TokenizeResult> {
+  const {
+    agentId,
+    chainId,
+    symbol,
+    antiSniperTaxType,
+    needAcf,
+    isProject60days,
+    airdropPercent = 0,
+    isRobotics,
+    prebuyVirtualBaseUnit,
+    walletAddress,
+    onProgress,
+  } = params;
+
+  let launch: PrepareLaunchResponse;
+  try {
+    onProgress?.("\nPreparing token launch...");
+    launch = await agentApi.prepareLaunch(
+      agentId,
+      chainId,
+      symbol,
+      antiSniperTaxType,
+      needAcf,
+      isProject60days,
+      airdropPercent,
+      isRobotics,
+      prebuyVirtualBaseUnit > 0n ? prebuyVirtualBaseUnit.toString() : undefined
+    );
+  } catch (err) {
+    throw new Error(
+      `Failed to prepare launch: ${
+        err instanceof Error ? err.message : String(err)
+      }`
+    );
+  }
+
+  const {
+    virtualId,
+    contracts,
+    launchFee,
+    approveCalldata,
+    preLaunchCalldata,
+  } = launch;
+
+  const launchFeeWei = BigInt(launchFee);
+  const totalApprovalWei = launchFeeWei + prebuyVirtualBaseUnit;
+
+  let preLaunchTxHash: string;
+  try {
+    await checkVirtualBalance(
+      chainId,
+      contracts.virtualToken,
+      walletAddress,
+      totalApprovalWei.toString()
+    );
+    if (!json && needAcf) {
+      console.log(
+        `Launch fee (with ACF): ${formatEther(launchFeeWei)} VIRTUAL`
+      );
+    }
+    if (!json && isProject60days) {
+      console.log(
+        `60 Days Experiment enabled — pre-buy tokens will follow a 60-day cliff.`
+      );
+    }
+    if (!json && airdropPercent > 0) {
+      console.log(
+        `Airdrop: allocating ${airdropPercent}% of supply to veVIRTUAL holders.`
+      );
+    }
+    if (!json && isRobotics) {
+      console.log(`Robotics Launch: enabled (Eastworld eligibility).`);
+    }
+    if (!json && prebuyVirtualBaseUnit > 0n) {
+      console.log(
+        `Pre-buying ${formatEther(prebuyVirtualBaseUnit)} VIRTUAL of $${symbol}`
+      );
+    }
+    onProgress?.("Approving VIRTUAL token...");
+
+    await sendApprove(chainId, contracts.virtualToken, approveCalldata);
+
+    onProgress?.("Calling preLaunch contract...");
+    preLaunchTxHash = await sendPreLaunch(
+      chainId,
+      contracts.bondingV5,
+      preLaunchCalldata
+    );
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const hints: string[] = [];
+    if (needAcf && prebuyVirtualBaseUnit > 0n) {
+      hints.push("with ACF enabled, pre-buy must be ≤50% of LP");
+    }
+    if (airdropPercent > 0 && prebuyVirtualBaseUnit > 0n) {
+      hints.push(
+        `airdrop reserves ${airdropPercent}% of supply before LP, reducing pre-buy headroom`
+      );
+    }
+    const hint = hints.length
+      ? ` Hint: ${hints.join("; ")}; reduce --prebuy and retry.`
+      : "";
+    throw new Error(`Failed to launch token: ${msg}${hint}`);
+  }
+
+  return {
+    virtualId,
+    txHash: preLaunchTxHash,
+    launchFee: launchFeeWei.toString(),
+  };
 }
