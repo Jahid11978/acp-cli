@@ -206,7 +206,7 @@ export async function tokenizeOnSolana(
           BigInt(solanaLaunch.launchFee) + prebuyVirtualBaseUnit;
         const owner = (await provider.getAddress()) as SolAddr;
         const { amount, decimals } = await getSplTokenBalance(
-          provider.getRpc(),
+          provider.getRpc(chainId),
           owner,
           solanaLaunch.quoteMint as SolAddr
         );
@@ -219,7 +219,7 @@ export async function tokenizeOnSolana(
             "VALIDATION_ERROR"
           );
         }
-        return provider.sendInstructions(ixs);
+        return provider.sendInstructions(chainId, ixs);
       },
       { chainId, sponsored: false }
     );

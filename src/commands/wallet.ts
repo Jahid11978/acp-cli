@@ -969,7 +969,7 @@ export function registerWalletCommands(program: Command): void {
             if (opts.token) {
               const mint = opts.token as SolAddr;
               const { decimals } = await getSplTokenBalance(
-                provider.getRpc(),
+                provider.getRpc(chainId),
                 me,
                 mint
               );
@@ -982,10 +982,10 @@ export function registerWalletCommands(program: Command): void {
                 decimals,
                 payer: me,
               });
-              return provider.sendInstructions(ixs);
+              return provider.sendInstructions(chainId, ixs);
             }
             const lamports = parseUnits(opts.amount, 9);
-            return provider.sendInstructions([
+            return provider.sendInstructions(chainId, [
               buildSolTransferIx(me, to, lamports),
             ]);
           },
@@ -1014,7 +1014,7 @@ export function registerWalletCommands(program: Command): void {
         ) as SerializedSolanaInstruction[];
         const ixs = deserializeSolanaInstructions(parsed);
         const signature = await withApprovalGate(
-          (p: ISolanaProviderAdapter) => p.sendInstructions(ixs),
+          (p: ISolanaProviderAdapter) => p.sendInstructions(chainId, ixs),
           { chainId }
         );
         outputResult(json, { signature });
