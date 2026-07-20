@@ -114,17 +114,21 @@ interface SignAction {
 }
 
 // The methods the trade loop needs from the Privy Solana adapter. They exist
-// at runtime on PrivySolanaProviderAdapter; the published .d.ts lags behind,
-// hence the local shape + cast at the create site.
+// at runtime on PrivySolanaProviderAdapter; kept as a local shape + cast at the
+// create site to decouple from the adapter's full ISolanaProviderAdapter type.
+// These signatures MUST match acp-node-v2's privySolanaProviderAdapter.d.ts.
 type SolanaTradeSigner = {
   signMessage(message: string): Promise<string>; // base58-encoded signature
   signTransactionViaPrivy(txBase64: string): Promise<string>; // signed tx, base64
   // Consolidated sponsorship: sponsor (Alchemy fee payer) + co-sign + broadcast
   // a server-built tx using acp-node-v2's own gas sponsorship; resolves to the
   // ON-CHAIN signature. Throws on sponsor failure (sponsorship-only, no self-pay).
-  // lastValidBlockHeight bounds confirmation at the tx blockhash's true expiry;
-  // omitted, the adapter uses the current tip's window (safe upper bound).
+  // chainId keys the adapter's proxied-RPC + auth-token sponsorship (pass the
+  // same Privy chain id the adapter was created with). lastValidBlockHeight
+  // bounds confirmation at the tx blockhash's true expiry; omitted, the adapter
+  // uses the current tip's window (safe upper bound).
   sendSponsoredSignedTransaction(
+    chainId: number,
     txBase64: string,
     options?: { lastValidBlockHeight?: bigint }
   ): Promise<string>;
@@ -742,6 +746,7 @@ export async function runTradeLoop(
                 ? { lastValidBlockHeight: BigInt(action.lastValidBlockHeight) }
                 : undefined;
             sponsoredTxHash = await solSigner.sendSponsoredSignedTransaction(
+              SOLANA_MAINNET_PRIVY_CHAIN_ID,
               action.txBase64 ?? "",
               lvbh
             );
