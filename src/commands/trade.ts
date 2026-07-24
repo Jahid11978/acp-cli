@@ -309,7 +309,8 @@ export function registerTradeCommands(program: Command): void {
         "  acp trade --amount-in 25 --chain-out hyperliquid                       # deposit (alias)\n" +
         "  acp trade --token AAPL --amount-usdc 50                          # buy tokenized AAPL with USDC on Ethereum\n" +
         "  acp trade --token AAPL --token-in eth --chain-in 8453 --amount-in 0.02  # buy AAPL, funded by ETH on Base\n" +
-        "  acp trade --token AAPL --amount-shares 0.1                       # sell 0.1 tokenized AAPL shares (Treasures)\n" +
+        "  acp trade --token AAPL --amount-shares 0.1 --chain sol           # sell 0.1 tokenized AAPL shares (--chain REQUIRED on sells;\n" +
+        "                                                                   #   find it in stocks[] of `acp wallet balance --json`)\n" +
         "  acp trade --token AAPL --amount-shares 3 --chain eth --token-out usdc --chain-out 8453  # sell AAPL → proceeds as USDC on Base\n" +
         "  acp trade hl-status                                                  # HL account only; use `acp wallet balance` for on-chain balances\n"
     )
@@ -327,9 +328,9 @@ export function registerTradeCommands(program: Command): void {
     // -- Treasures tokenized stock (USDC ↔ stock token swap) -------------
     // The asset is named with --token (below); these flags pick buy vs sell.
     .option("--amount-usdc <amount>", "USDC to spend on a Treasures tokenized-stock buy (with --token)")
-    .option("--amount-shares <amount>", "Shares to liquidate on a Treasures tokenized-stock sell (with --token)")
+    .option("--amount-shares <amount>", "Shares to liquidate on a Treasures tokenized-stock sell (with --token; requires --chain)")
     .option("--protocol <name>", "Treasures protocol filter: ondo or xstocks")
-    .option("--chain <name>", "Treasures venue filter: eth (sol legs can't be signed by the CLI)")
+    .option("--chain <name>", "Treasures venue: eth or sol. REQUIRED on sells — the chain holding your shares (see stocks[] in `acp wallet balance --json`); optional on buys to pin the venue")
     // -- Hyperliquid perp (position shape) -------------------------------
     .option("--side <side>", "Perp side: long or short")
     .option(
@@ -455,6 +456,13 @@ export function registerTradeCommands(program: Command): void {
 // detects the venue (swap / deposit / HL spot / HL perp / HL withdraw /
 // Treasures) and hands back the actions to sign. The CLI does no routing.
 async function runTrade(opts: Record<string, unknown>, json: boolean): Promise<void> {
+  if (opts.amountShares !== undefined && opts.chain === undefined) {
+    throw new CliError(
+      "tokenized-stock sells require --chain eth|sol",
+      "VALIDATION_ERROR",
+      "Run `acp wallet balance` to see which chain holds the shares, then retry with --chain eth or --chain sol"
+    );
+  }
   const { apiUrl, token } = await getApiContext();
   const owner = getWalletAddress() as Address;
 
