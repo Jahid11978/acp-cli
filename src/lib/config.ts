@@ -1,4 +1,11 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "fs";
+import type { AuthTokenStore } from "@virtuals-protocol/acp-node-v2";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  writeFileSync,
+} from "fs";
 import { homedir } from "os";
 import { resolve } from "path";
 import {
@@ -46,6 +53,10 @@ interface Config {
   activeWallet?: string;
   agents?: Record<string, AgentConfig>;
   jobRegistry?: Record<string, JobRegistryEntry>;
+}
+
+export function getConfigDir(): string {
+  return CONFIG_DIR;
 }
 
 function loadConfig(): Config {
@@ -126,6 +137,42 @@ export async function setTokens(
       refreshToken
     )
   );
+}
+
+function agentAuthAccount(walletAddress: string): string {
+  return `agent-token-${walletAddress.toLowerCase()}`;
+}
+
+export async function getAgentAuthToken(
+  walletAddress: string
+): Promise<string | undefined> {
+  return (
+    (await withKeyringFallback(() =>
+      getPassword(AUTH_KEYCHAIN_SERVICE, agentAuthAccount(walletAddress))
+    )) ?? undefined
+  );
+}
+
+export async function setAgentAuthToken(
+  walletAddress: string,
+  token: string
+): Promise<void> {
+  await withKeyringFallback(() =>
+    setPassword(AUTH_KEYCHAIN_SERVICE, agentAuthAccount(walletAddress), token)
+  );
+}
+
+export async function createAuthTokenStore(
+  walletAddress: string
+): Promise<AuthTokenStore> {
+  let cached = await getAgentAuthToken(walletAddress);
+  return {
+    get: () => cached,
+    set: (token: string) => {
+      cached = token;
+      void setAgentAuthToken(walletAddress, token);
+    },
+  };
 }
 
 export function getWalletId(walletAddress: string): string | undefined {
