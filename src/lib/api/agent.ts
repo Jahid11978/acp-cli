@@ -566,7 +566,7 @@ export interface TokenInfo {
 export interface StockPosition {
   ticker: string;
   token_ticker: string | null;
-  chain: "sol" | "eth";
+  chain: "sol" | "eth" | "base" | "robinhood";
   protocol: string;
   token_address: string | null;
   tokens: string;
