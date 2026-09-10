@@ -726,7 +726,7 @@ acp trade stock-list
 acp trade stock-list AAPL
 ```
 
-With no symbol you get the tokenized-stock catalog under `stocks` (`symbol`, `name`, `protocols`). `protocols` is how you tell which venues carry a ticker — `ondo`/`xstocks` are the Ethereum and Solana listings, `coinbase` is Base, `robinhood` is Robinhood Chain. A `warnings` field appears only if one venue's catalog is temporarily unavailable.
+With no symbol you get the tokenized-stock catalog under `stocks` (`symbol`, `name`, `protocols`). `protocols` names the listings behind a ticker, but reports only `ondo`/`xstocks` — the catalog keeps the venue/chain internal by design, so it is not a venue list and a ticker may also trade on Base or Robinhood Chain without saying so. A `warnings` field appears only if one venue's catalog is temporarily unavailable.
 
 With a symbol you get `{ symbol, name?, routes }`, where each route is `{ kind, label, token, maxLeverage? }`. **`token` is the exact ticker string to pass** — e.g. an HL equity perp must be quoted `xyz:AAPL`, while the tokenized-stock route uses bare `AAPL`. The route tells you *what's possible and which ticker*; the flags for each (`--side`, `--amount-usdc`, …) are documented above.
 
@@ -762,16 +762,7 @@ The command **blocks until the bridge settles** — it signs the source-chain tx
 
 Buy or sell real tokenized equities. Spot — you receive the share token, no leverage or funding.
 
-**Venues.** A tokenized stock trades on one of four venues, named by `--chain`:
-
-| `--chain`   | Chain                  | Settles in | `--protocol`      | Auto-picked on a buy       | Fund from another chain |
-| ----------- | ---------------------- | ---------- | ----------------- | -------------------------- | ----------------------- |
-| `eth`       | Ethereum (1)           | USDC       | `ondo`, `xstocks` | yes                        | yes                     |
-| `base`      | Base (8453)            | USDC       | `coinbase`        | yes                        | yes                     |
-| `sol`       | Solana                 | USDC       | `ondo`, `xstocks` | yes                        | yes                     |
-| `robinhood` | Robinhood Chain (4663) | **USDG**   | `robinhood`       | **no — pin it explicitly** | **no**                  |
-
-Not every ticker lists on every venue — `acp trade stock-list <SYMBOL>` shows which ones carry it, and `--protocol` pins one listing (which implies its venue).
+**Venues.** A tokenized stock trades on one of several venues, named by `--chain` — today `eth` (Ethereum), `base` (Base) and `sol` (Solana), which all settle in USDC, plus `robinhood` (Robinhood Chain), which settles in USDG. `--protocol` pins a specific listing (`ondo`, `xstocks`, `coinbase`, `robinhood`) and implies its venue. Venues get added over time and not every ticker lists on every one, so treat the backend as the source of truth: it names the venue it rejected if you pass one it doesn't carry, and `stocks[].chain` from `acp wallet balance --json` is definitive for shares you already hold.
 
 **On a buy `--chain` is optional.** Leave it off and the backend quotes the auto-eligible venues (eth, base, sol) and takes the best fill your wallet can actually fund in place; pass it to pin one. Buys on the USDC venues can spend USDC you already hold or be funded from another chain via `--token-in`/`--chain-in` (it bridges first).
 
