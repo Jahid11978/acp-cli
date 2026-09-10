@@ -702,7 +702,7 @@ Each event line includes the job ID, chain ID, status, your roles, available act
 Two intents don't use the chain-pair shape:
 
 - **Perps** — `--side long|short` (with `--token`). Leveraged positions on **crypto, stocks/equities, FX/currencies, and commodities**.
-- **Tokenized stocks (spot)** — `--token <TICKER>` plus `--amount-usdc` (buy) or `--amount-shares` (sell), and **no `--side`**. Buys/sells real tokenized equity (you own the share token), distinct from an equity *perp*. The backend auto-picks the venue/chain.
+- **Tokenized stocks (spot)** — `--token <TICKER>` plus `--amount-usdc` (buy) or `--amount-shares` (sell), and **no `--side`**. Buys/sells real tokenized equity (you own the share token), distinct from an equity *perp*. Four venues — Ethereum, Base, Solana, Robinhood Chain — picked automatically on a buy, named with `--chain` on a sell.
 
 > **Stock vs perp routes by FLAG, not the ticker.** `AAPL` is both a tokenized stock and an HL equity perp — `--amount-usdc`/`--amount-shares` (no `--side`) buys the spot stock; `--side` opens the leveraged perp.
 
@@ -726,7 +726,7 @@ acp trade stock-list
 acp trade stock-list AAPL
 ```
 
-With no symbol you get the tokenized-stock catalog under `stocks` (`symbol`, `name`, `protocols`). A `warnings` field appears only if one venue's catalog is temporarily unavailable.
+With no symbol you get the tokenized-stock catalog under `stocks` (`symbol`, `name`, `protocols`). `protocols` names the listings behind a ticker, but reports only `ondo`/`xstocks` — the catalog keeps the venue/chain internal by design, so it is not a venue list and a ticker may also trade on Base or Robinhood Chain without saying so. A `warnings` field appears only if one venue's catalog is temporarily unavailable.
 
 With a symbol you get `{ symbol, name?, routes }`, where each route is `{ kind, label, token, maxLeverage? }`. **`token` is the exact ticker string to pass** — e.g. an HL equity perp must be quoted `xyz:AAPL`, while the tokenized-stock route uses bare `AAPL`. The route tells you *what's possible and which ticker*; the flags for each (`--side`, `--amount-usdc`, …) are documented above.
 
@@ -760,19 +760,35 @@ The command **blocks until the bridge settles** — it signs the source-chain tx
 
 **Tokenized stocks (spot buy/sell):**
 
-Buy or sell real tokenized equities. Spot — you receive the share token, no leverage or funding. The backend auto-routes the venue and chain; you never specify one. Buys can spend USDC you already hold or be funded from another chain (it bridges first). Sells need an explicit `--chain eth|sol` (the server can't see which chain holds your shares). A sell settles as USDC on Ethereum by default; to land the proceeds elsewhere, add `--token-out`/`--chain-out` and the `eth` venue bridges the USDC onward in the same command (a non-USDC `--token-out` requires `--chain-out`). Onward delivery is eth-venue only — a `--chain sol` sell delivers USDC to your Solana wallet and stays there.
+Buy or sell real tokenized equities. Spot — you receive the share token, no leverage or funding.
+
+**Venues.** A tokenized stock trades on one of several venues, named by `--chain` — today `eth` (Ethereum), `base` (Base) and `sol` (Solana), which all settle in USDC, plus `robinhood` (Robinhood Chain), which settles in USDG. `--protocol` pins a specific listing (`ondo`, `xstocks`, `coinbase`, `robinhood`) and implies its venue. Venues get added over time and not every ticker lists on every one, so treat the backend as the source of truth: it names the venue it rejected if you pass one it doesn't carry, and `stocks[].chain` from `acp wallet balance --json` is definitive for shares you already hold.
+
+**On a buy `--chain` is optional.** Leave it off and the backend quotes the auto-eligible venues (eth, base, sol) and takes the best fill your wallet can actually fund in place; pass it to pin one. Buys on the USDC venues can spend USDC you already hold or be funded from another chain via `--token-in`/`--chain-in` (it bridges first).
+
+**On a sell `--chain` is required** — the server can't see which chain holds your shares. Get it from `acp wallet balance --json` (`stocks[].chain`).
+
+A sell settles on **the venue's own chain**: USDC on Ethereum, Base, or Solana, and USDG on Robinhood Chain. To land the proceeds somewhere else, add `--token-out`/`--chain-out` and the same command bridges them onward from eth, base, or sol. A non-USDC `--token-out` requires `--chain-out` (the destination chain is never guessed).
+
+> **Robinhood Chain is the exception to most of the above.** It settles in **USDG**, not USDC, and no bridge covers chain 4663 — so a buy there spends USDG you already hold (no `--token-in`/`--chain-in` funding) and a sell leaves USDG on Robinhood Chain (`--token-out`/`--chain-out` is rejected with a `VALIDATION_ERROR`). It's never picked automatically; reach it only with an explicit `--chain robinhood`.
 
 ```bash
-# Buy $5 of AAPL with USDC you hold (venue auto-picked)
+# Buy $5 of AAPL with USDC you hold (venue auto-picked across eth/base/sol)
 acp trade --token AAPL --amount-usdc 5
+
+# Pin the venue instead of letting the backend compare
+acp trade --token AAPL --amount-usdc 5 --chain base
 
 # Buy funded from another chain — bridges VIRTUAL@Base → USDC, then buys
 acp trade --token AAPL --token-in virtual --chain-in 8453 --amount-in 8
 
-# Sell 0.01 AAPL shares (delivers USDC; --chain required on sells)
+# Buy on Robinhood Chain — explicit only, spends USDG you already hold there
+acp trade --token AAPL --amount-usdc 5 --chain robinhood
+
+# Sell 0.01 AAPL shares (delivers USDC on the venue's chain; --chain required on sells)
 acp trade --token AAPL --amount-shares 0.01 --chain sol
 
-# Sell 3 AAPL shares, receive the proceeds as USDC on Base (eth venue bridges onward)
+# Sell 3 AAPL shares, receive the proceeds as USDC on Base (bridges onward)
 acp trade --token AAPL --amount-shares 3 --chain eth --token-out usdc --chain-out 8453
 # ...or as ETH on Arbitrum — a non-USDC --token-out requires --chain-out (chain never guessed)
 acp trade --token AAPL --amount-shares 3 --chain eth --token-out eth --chain-out 42161

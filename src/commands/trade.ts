@@ -300,7 +300,7 @@ export function registerTradeCommands(program: Command): void {
         "  --token <sym> --side long|short --size <n> --leverage <n>  → Hyperliquid perp\n" +
         "    --size is in TOKEN UNITS, not USD (e.g. --size 0.01 = 0.01 BTC). --leverage reduces margin required.\n" +
         "\nAdd --dry-run to any trade to preview the route, size, margin, and fees without signing or submitting.\n" +
-        "  --token <sym> --amount-usdc|-shares   → Treasures tokenized stock (spot buy/sell, USDC on Ethereum)\n" +
+        "  --token <sym> --amount-usdc|-shares   → Treasures tokenized stock (spot buy/sell; settles USDC on eth/base/sol, USDG on robinhood)\n" +
         "  --token <sym> --token-in/-chain-in/-amount-in (no --token-out) → Treasures buy funded from any chain\n" +
         "\nExamples:\n" +
         "  acp trade --token-in usdc --chain-in 8453 --amount-in 50 --token-out virtual --chain-out 8453\n" +
@@ -314,7 +314,7 @@ export function registerTradeCommands(program: Command): void {
         "  acp trade --side long --token BTC --amount-usdc 100 --take-profit 130000 --stop-loss 80000   # open with TP/SL\n" +
         "  acp trade --side long --token BTC --stop-loss 80000                    # set a stop on an existing long\n" +
         "  acp trade --amount-in 25 --chain-out hyperliquid                       # deposit (alias)\n" +
-        "  acp trade --token AAPL --amount-usdc 50                          # buy tokenized AAPL with USDC on Ethereum\n" +
+        "  acp trade --token AAPL --amount-usdc 50                          # buy tokenized AAPL (venue auto-picked across eth/base/sol)\n" +
         "  acp trade --token AAPL --token-in eth --chain-in 8453 --amount-in 0.02  # buy AAPL, funded by ETH on Base\n" +
         "  acp trade --token AAPL --amount-shares 0.1 --chain sol           # sell 0.1 tokenized AAPL shares (--chain REQUIRED on sells;\n" +
         "                                                                   #   find it in stocks[] of `acp wallet balance --json`)\n" +
@@ -358,10 +358,13 @@ export function registerTradeCommands(program: Command): void {
       "--amount-shares <amount>",
       "Shares to liquidate on a Treasures tokenized-stock sell (with --token; requires --chain)"
     )
-    .option("--protocol <name>", "Treasures protocol filter: ondo or xstocks")
+    .option(
+      "--protocol <name>",
+      "Treasures protocol filter: ondo or xstocks (eth/sol venues), coinbase (base), robinhood (Robinhood Chain). Pinning one implies its venue"
+    )
     .option(
       "--chain <name>",
-      "Treasures venue: eth or sol. REQUIRED on sells — the chain holding your shares (see stocks[] in `acp wallet balance --json`); optional on buys to pin the venue"
+      "Treasures venue: eth, base, sol, or robinhood. REQUIRED on sells — the chain holding your shares (copy stocks[].chain from `acp wallet balance --json`); optional on buys to pin the venue (eth/base/sol are compared automatically, robinhood is explicit-only)"
     )
     // -- Hyperliquid perp (position shape) -------------------------------
     .option("--side <side>", "Perp side: long or short")
@@ -605,9 +608,9 @@ async function runTrade(
 ): Promise<Record<string, unknown> | void> {
   if (opts.amountShares !== undefined && opts.chain === undefined) {
     throw new CliError(
-      "tokenized-stock sells require --chain eth|sol",
+      "tokenized-stock sells require --chain eth|base|sol|robinhood",
       "VALIDATION_ERROR",
-      "Run `acp wallet balance` to see which chain holds the shares, then retry with --chain eth or --chain sol"
+      "Run `acp wallet balance --json`, find this ticker in stocks[], and pass its `chain` value verbatim (e.g. --chain base)"
     );
   }
   const { apiUrl, token } = await getApiContext();
