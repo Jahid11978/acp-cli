@@ -6,8 +6,8 @@ The `acp agent tokenize` command launches a token for the **active agent**.
 
 1. An active agent is set — run `acp agent use` if you haven't.
 2. A signer is registered for the active agent — run `acp agent add-signer` if you haven't. `tokenize` will refuse to run without a signer.
-3. The agent wallet has enough **VIRTUAL** to cover the launch fee (plus any pre-buy amount).
-4. The agent wallet has enough **ETH** to cover gas fees for the on-chain transactions.
+3. The agent wallet holds enough of the venue's currency: **VIRTUAL** on the Virtuals launchpad, to cover the launch fee plus any pre-buy; **the quote asset** on Occupy, to cover a pre-buy (there is no launch fee, so with no pre-buy the wallet needs nothing at all). Either way the agent spends from its own wallet.
+4. The agent wallet has enough **ETH** to cover gas fees for the on-chain transactions, unless gas is sponsored for it.
 
 ## Chain selection
 
@@ -20,11 +20,13 @@ The available chains come from the EVM provider attached to the active agent. Yo
 
 Anti-sniper applies a temporary transfer tax to newly launched tokens to discourage sniper bots from buying in the first seconds/minutes.
 
-| Value | Label      | Duration |
-| ----- | ---------- | -------- |
-| `0`   | None       | Off      |
-| `1`   | 60 seconds | Default  |
-| `2`   | 98 minutes | Extended |
+| Value | Label      | Duration | Venue |
+| ----- | ---------- | -------- | ----- |
+| `0`   | None       | Off      | Both |
+| `1`   | 60 seconds | Default  | Both |
+| `2`   | 98 minutes | Extended | Virtuals only |
+
+Occupy offers only `0` or `1`; `2` is a Virtuals launchpad option and is rejected on Occupy.
 
 ## Pre-buy
 
@@ -71,20 +73,71 @@ Marks the virtual as an **Embodied** (robotics-capable) agent and makes it eligi
 - **Eastworld onboarding is post-launch.** Once the flag is set, use [app.virtuals.io](https://app.virtuals.io) (or the partnerships team) to complete Eastworld onboarding. There is no CLI command for the physical onboarding flow.
 - **Compatible with all other flags** (`--acf`, `--60-days`, `--airdrop-percent`, `--prebuy`, `--anti-sniper`). No mutual exclusions apply.
 
+## Occupy launchpad
+
+`--launchpad occupy` launches on **Occupy** instead of the Virtuals launchpad. Everything above (ACF, 60 Days, airdrop, Robotics) is Virtuals-specific and is **rejected** rather than silently ignored when combined with `--launchpad occupy`.
+
+Occupy differs in three ways that matter at the CLI:
+
+- **Single-phase and free.** One `launch` call mints the token, opens the Uniswap v4 pool and settles the pre-buy. There is no launch fee, so the agent wallet needs no VIRTUAL — only gas, which is sponsored for ACP agent wallets.
+- **The curve is quoted in a tokenized equity**, not VIRTUAL. `--quote-token` picks it, and it is **required** — there is no default, because the choice decides which stock your token trades against. Pass a **symbol** (`NVDAc`, `TSLAc`, `MSFTc`) or an address; list what is available with `acp agent quote-tokens`. The allow-listed assets on Base are share tokens — `NVDAc` (NVIDIA), `AAPLc` (Apple), `TSLAc` (Tesla), `METAc`, `GOOGLc`, `MSTRc`, `AMZNc`, `SPCXc` (SpaceX) — so an agent token trades against a stock rather than against VIRTUAL or a stablecoin. **WETH and USDC are not allow-listed.** The backend checks `AssetConfig` before creating anything and fails with a clear message otherwise.
+- **These tokens carry 8 decimals, not 18.** `--prebuy 5` means 5 shares' worth, and the CLI reads the token's decimals to convert it — assuming 18 would overspend by a factor of 10^10.
+- **A pre-buy is denominated in the quote asset**, so `--prebuy` on Occupy requires `--quote-token`.
+
+Occupy runs on EVM chains only; Solana launches go through the Virtuals launchpad.
+
+| Flag | Default | Notes |
+| --- | --- | --- |
+| `--name <name>` | the agent's name | Token name on-chain. Occupy names the token independently of the agent |
+| `--quote-token <symbol\|address>` | **required, no default** | The asset the curve is priced against, e.g. `NVDAc`. See `acp agent quote-tokens` |
+| `--pool-fee <fee>` | `10000` | Uniswap v4 pool fee in hundredths of a bip; on-chain bounds are 10000 (1%) – 30000 (3%) |
+| `--tax-bips <bips>` | `100` | Trading tax, in bips |
+| `--no-thicken-liquidity` | thickening on | Disables liquidity thickening |
+| `--anti-sniper <0\|1>` | `1` | Occupy offers only off or 60 seconds |
+| `--prebuy <amount>` | none | In **quote-token** units, not VIRTUAL. Requires `--quote-token` |
+
+```bash
+# What can this curve be priced against?
+acp agent quote-tokens --chain-id 8453
+
+# Launch on Occupy, priced against NVIDIA
+acp agent tokenize --launchpad occupy --chain-id 8453 --symbol MYTOKEN \
+  --quote-token NVDAc
+
+# Name the token something other than the agent's name
+acp agent tokenize --launchpad occupy --chain-id 8453 --symbol MYTOKEN \
+  --name "My Token" --quote-token NVDAc
+
+# No anti-sniper protection
+acp agent tokenize --launchpad occupy --chain-id 8453 --symbol MYTOKEN \
+  --quote-token NVDAc --anti-sniper 0
+
+# 3% pool fee, no liquidity thickening
+acp agent tokenize --launchpad occupy --chain-id 8453 --symbol MYTOKEN \
+  --quote-token TSLAc --pool-fee 30000 --no-thicken-liquidity
+
+# Pre-buy 5 shares' worth of the quote asset at launch
+acp agent tokenize --launchpad occupy --chain-id 8453 --symbol MYTOKEN \
+  --quote-token NVDAc --prebuy 5
+```
+
 ## CLI usage
 
 ```
 acp agent tokenize [--chain-id <id>] [--symbol <symbol>] [--anti-sniper <0|1|2>] [--prebuy <virtuals>] [--acf] [--60-days] [--airdrop-percent <percent>] [--robotics] [--configure]
+acp agent quote-tokens [--chain-id <id>]
+acp agent tokenize --launchpad occupy --quote-token <symbol|address> [--chain-id <id>] [--symbol <symbol>] [--name <name>] [--pool-fee <fee>] [--tax-bips <bips>] [--no-thicken-liquidity] [--anti-sniper <0|1|2>] [--prebuy <amount>]
 ```
 
 - `--chain-id <id>` — chain to launch on. Restricted to what the provider supports.
 - `--symbol <symbol>` — token symbol (uppercased). Prompted if omitted.
-- `--anti-sniper <0|1|2>` — set directly. Respected with or without `--configure`.
+- `--anti-sniper <0|1|2>` — set directly (`0` or `1` only on Occupy). Respected with or without `--configure`.
 - `--prebuy <virtuals>` — VIRTUAL tokens to spend at launch. Respected with or without `--configure`.
 - `--acf` — enable Capital Formation. Respected with or without `--configure`.
 - `--60-days` — enable 60 Days Experiment mode. Respected with or without `--configure`.
 - `--airdrop-percent <percent>` — airdrop allocation to veVIRTUAL holders (0–5). Respected with or without `--configure`.
 - `--robotics` — mark as a Robotics (Eastworld-eligible) launch. Respected with or without `--configure`.
+- `--launchpad <virtuals|occupy>` — launchpad to launch on. Defaults to `virtuals`. See [Occupy](#occupy-launchpad).
 - `--configure` — interactive pickers for anti-sniper, pre-buy, ACF, 60 Days Experiment, airdrop, and Robotics (blank / `N` to skip). Skipped for values already passed via flags.
 
 Without `--configure`, the defaults below apply automatically — the CLI will not prompt for these options. Only `--chain-id` and `--symbol` are prompted when omitted.

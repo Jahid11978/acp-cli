@@ -7,9 +7,14 @@ import {
 } from "@virtuals-protocol/acp-node-v2";
 import type {
   AgentApi,
+  OccupyLaunchOptions,
+  OccupyQuoteToken,
+  OccupyPrepareLaunchResponse,
   PrepareLaunchResponse,
   SolanaPrepareLaunchResponse,
+  VirtualsPrepareLaunchResponse,
 } from "./api/agent";
+import { isOccupyLaunch } from "./api/agent";
 import { toSolanaInstructionLike, type SolAddr } from "./solana";
 import { isSolanaChainId } from "./chains";
 import { withApprovalGate } from "./walletGate";
@@ -30,6 +35,9 @@ export interface TokenizeParams {
 
 export interface EvmTokenizeParams extends TokenizeParams {
   walletAddress: string;
+  launchOptions?: OccupyLaunchOptions;
+  /** Resolved Occupy quote asset, when one was named. */
+  quoteToken?: OccupyQuoteToken;
 }
 
 export interface TokenizeResult {
@@ -62,6 +70,86 @@ function getEvmProvider(chainId: number) {
     }
     return client.getProvider();
   });
+}
+
+/**
+ * Turn `--quote-token` (a symbol like NVDAc, or an address) into the full
+ * record. The decimals matter: the tokenized equities are 8-decimal while
+ * other allow-listed assets are 18, so a pre-buy converted against the wrong
+ * one is off by orders of magnitude.
+ */
+export async function resolveQuoteToken(
+  agentApi: AgentApi,
+  chainId: number,
+  quoteToken: string
+): Promise<OccupyQuoteToken> {
+  const tokens = await agentApi.listOccupyQuoteTokens(chainId);
+  const wanted = quoteToken.trim().toLowerCase();
+  const match = tokens.find(
+    (t) =>
+      t.symbol.toLowerCase() === wanted || t.address.toLowerCase() === wanted
+  );
+  if (!match) {
+    throw new CliError(
+      `Unknown quote token "${quoteToken}" on chain ${chainId}.`,
+      "MISSING_QUOTE_TOKEN",
+      `Available: ${tokens.map((t) => `${t.symbol} (${t.name})`).join(", ")}`
+    );
+  }
+  return match;
+}
+
+/**
+ * Occupy quotes its curve in an arbitrary asset, so a pre-buy is denominated in
+ * that token's units rather than VIRTUAL's 18. Read the decimals rather than
+ * assuming — an 8-decimal quote asset would otherwise overspend by 10^10.
+ */
+export function convertPrebuyWithDecimals(
+  raw: string,
+  decimals: number
+): bigint | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return 0n;
+  if (!/^\d*\.?\d+$/.test(trimmed)) return null;
+  try {
+    const base = parseUnits(trimmed as `${number}`, decimals);
+    return base < 0n ? null : base;
+  } catch {
+    return null;
+  }
+}
+
+export async function checkTokenBalance(
+  chainId: number,
+  tokenAddress: string,
+  wallet: string,
+  requiredWei: string,
+  label: string
+): Promise<number> {
+  const provider = await getEvmProvider(chainId);
+  const [balance, decimals] = await Promise.all([
+    provider.readContract(chainId, {
+      abi: erc20Abi,
+      address: tokenAddress as `0x${string}`,
+      functionName: "balanceOf",
+      args: [wallet as `0x${string}`],
+    }) as Promise<bigint>,
+    provider.readContract(chainId, {
+      abi: erc20Abi,
+      address: tokenAddress as `0x${string}`,
+      functionName: "decimals",
+    }) as Promise<number>,
+  ]);
+  const required = BigInt(requiredWei);
+  if (balance < required) {
+    throw new Error(
+      `Insufficient ${label} balance. Need ${formatUnits(
+        required,
+        Number(decimals)
+      )}, have ${formatUnits(balance, Number(decimals))}.`
+    );
+  }
+  return Number(decimals);
 }
 
 export async function checkVirtualBalance(
@@ -113,13 +201,28 @@ async function waitForReceipt(
 
 export async function sendApprove(
   chainId: number,
-  virtualTokenAddress: string,
+  tokenAddress: string,
   approveCalldata: string
 ): Promise<string> {
   const provider = await getEvmProvider(chainId);
   const txHash = await provider.sendTransaction(chainId, {
-    to: virtualTokenAddress as `0x${string}`,
+    to: tokenAddress as `0x${string}`,
     data: approveCalldata as `0x${string}`,
+  });
+
+  await waitForReceipt(provider, chainId, txHash as `0x${string}`);
+  return txHash;
+}
+
+export async function sendLaunch(
+  chainId: number,
+  bondingAddress: string,
+  launchCalldata: string
+): Promise<string> {
+  const provider = await getEvmProvider(chainId);
+  const txHash = await provider.sendTransaction(chainId, {
+    to: bondingAddress as `0x${string}`,
+    data: launchCalldata as `0x${string}`,
   });
 
   await waitForReceipt(provider, chainId, txHash as `0x${string}`);
@@ -239,6 +342,80 @@ export async function tokenizeOnSolana(
   };
 }
 
+/**
+ * Occupy is single-phase and charges no launch fee: one `launch` call mints the
+ * token, opens the pool and settles the pre-buy. So there is nothing to approve
+ * unless the backend returned `approveCalldata` for a pre-buy, and the balance
+ * to check is the quote token, not VIRTUAL.
+ */
+async function launchOnOccupy(
+  launch: OccupyPrepareLaunchResponse,
+  params: {
+    chainId: number;
+    symbol: string;
+    prebuyBaseUnit: bigint;
+    walletAddress: string;
+    quoteToken?: OccupyQuoteToken;
+    json?: boolean;
+    onProgress?: (message: string) => void;
+  }
+): Promise<TokenizeResult> {
+  const {
+    chainId,
+    symbol,
+    prebuyBaseUnit,
+    walletAddress,
+    quoteToken,
+    json,
+    onProgress,
+  } = params;
+  const { virtualId, contracts, approveCalldata, launchCalldata } = launch;
+
+  try {
+    if (!json) {
+      // The venue and the quote asset are the two things a human most needs to
+      // see before an irreversible launch: the curve is priced against a stock.
+      console.log(
+        `Launchpad: Occupy — no launch fee, one transaction, curve priced against ${contracts.quoteToken}`
+      );
+    }
+
+    if (prebuyBaseUnit > 0n) {
+      // Same shape as the VIRTUAL check on the Virtuals launchpad: the agent
+      // spends the venue's own currency out of its own wallet.
+      const decimals = await checkTokenBalance(
+        chainId,
+        contracts.quoteToken,
+        walletAddress,
+        prebuyBaseUnit.toString(),
+        quoteToken?.symbol ?? "quote token"
+      );
+      if (!json) {
+        console.log(
+          `Pre-buying $${symbol} with ${formatUnits(prebuyBaseUnit, decimals)} ${
+            quoteToken?.symbol ?? contracts.quoteToken
+          }`
+        );
+      }
+      if (!approveCalldata) {
+        throw new Error(
+          "Backend returned no approveCalldata for a non-zero pre-buy"
+        );
+      }
+      onProgress?.("Approving quote token...");
+      await sendApprove(chainId, contracts.quoteToken, approveCalldata);
+    }
+
+    onProgress?.("Calling launch contract...");
+    const txHash = await sendLaunch(chainId, contracts.bonding, launchCalldata);
+
+    return { virtualId, txHash, launchFee: "0" };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(`Failed to launch token on Occupy: ${msg}`);
+  }
+}
+
 export async function tokenizeOnEvm(
   agentApi: AgentApi,
   params: EvmTokenizeParams,
@@ -255,6 +432,8 @@ export async function tokenizeOnEvm(
     isRobotics,
     prebuyVirtualBaseUnit,
     walletAddress,
+    launchOptions,
+    quoteToken,
     onProgress,
   } = params;
 
@@ -270,7 +449,8 @@ export async function tokenizeOnEvm(
       isProject60days,
       airdropPercent,
       isRobotics,
-      prebuyVirtualBaseUnit > 0n ? prebuyVirtualBaseUnit.toString() : undefined
+      prebuyVirtualBaseUnit > 0n ? prebuyVirtualBaseUnit.toString() : undefined,
+      launchOptions
     );
   } catch (err) {
     throw new Error(
@@ -280,13 +460,25 @@ export async function tokenizeOnEvm(
     );
   }
 
+  if (isOccupyLaunch(launch)) {
+    return launchOnOccupy(launch, {
+      chainId,
+      symbol,
+      prebuyBaseUnit: prebuyVirtualBaseUnit,
+      walletAddress,
+      quoteToken,
+      json,
+      onProgress,
+    });
+  }
+
   const {
     virtualId,
     contracts,
     launchFee,
     approveCalldata,
     preLaunchCalldata,
-  } = launch;
+  } = launch as VirtualsPrepareLaunchResponse;
 
   const launchFeeWei = BigInt(launchFee);
   const totalApprovalWei = launchFeeWei + prebuyVirtualBaseUnit;

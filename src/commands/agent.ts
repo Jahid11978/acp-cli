@@ -49,10 +49,13 @@ import {
   EVM_MAINNET_CHAINS,
   EVM_TESTNET_CHAINS,
 } from "@virtuals-protocol/acp-node-v2";
+import type { OccupyQuoteToken } from "../lib/api/agent";
 import {
   tokenizeOnSolana,
   tokenizeOnEvm,
   convertPrebuyVirtual,
+  convertPrebuyWithDecimals,
+  resolveQuoteToken,
 } from "../lib/tokenize";
 import * as viemChains from "viem/chains";
 import { formatChainId, solanaChainId, isSolanaChainId } from "../lib/chains";
@@ -1424,17 +1427,60 @@ export function registerAgentCommands(program: Command): void {
     });
 
   agent
+    .command("quote-tokens")
+    .description(
+      "List the assets an Occupy launch can be priced against (use one with `tokenize --launchpad occupy --quote-token`)",
+    )
+    .option("--chain-id <id>", "Chain ID (default: 8453, Base)")
+    .action(async (opts, cmd) => {
+      const { agentApi } = await getClient();
+      const json = isJson(cmd);
+      const chainId = Number(opts.chainId ?? 8453);
+
+      let tokens;
+      try {
+        tokens = await agentApi.listOccupyQuoteTokens(chainId);
+      } catch (err) {
+        outputError(
+          json,
+          `Failed to list quote tokens: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+        return;
+      }
+
+      if (json) {
+        outputResult(json, { chainId, quoteTokens: tokens });
+        return;
+      }
+
+      if (tokens.length === 0) {
+        console.log(`No quote tokens available on chain ${chainId}.`);
+        return;
+      }
+
+      console.log(`\n${c.bold(`Occupy quote assets [${formatChainId(chainId)}]`)}`);
+      printTable(
+        tokens.map((t) => [
+          t.symbol,
+          `${t.name} — ${t.address} (${t.decimals} decimals)`,
+        ]),
+      );
+    });
+
+  agent
     .command("tokenize")
     .description("Tokenize the active agent on a blockchain")
     .option("--chain-id <id>", "Chain ID to tokenize on")
     .option("--symbol <symbol>", "Token symbol")
     .option(
       "--anti-sniper <type>",
-      "Anti-sniper protection: 0 (none), 1 (60s), 2 (98min)",
+      "Anti-sniper protection: 0 (none), 1 (60s), 2 (98min). Occupy offers only 0 or 1",
     )
     .option(
-      "--prebuy <virtuals>",
-      "Pre-buy amount in VIRTUAL tokens to spend at launch (e.g. 100 = 100 VIRTUAL)",
+      "--prebuy <amount>",
+      "Pre-buy at launch: VIRTUAL on the Virtuals launchpad (e.g. 100 = 100 VIRTUAL); units of --quote-token on Occupy (e.g. 5 = 5 shares)",
     )
     .option(
       "--acf",
@@ -1449,6 +1495,27 @@ export function registerAgentCommands(program: Command): void {
       "Airdrop allocation to veVIRTUAL holders (0–5%, e.g. 1.25)",
     )
     .option("--robotics", "Mark as a Robotics (Eastworld-eligible) launch")
+    .option(
+      "--launchpad <name>",
+      "Launchpad to launch on: virtuals (default) or occupy",
+    )
+    .option(
+      "--name <name>",
+      "Occupy only: token name (defaults to the agent's name)",
+    )
+    .option(
+      "--quote-token <address>",
+      "Occupy only, REQUIRED: the asset the curve is priced against — a symbol (e.g. NVDAc, TSLAc, MSFTc) or an address. Run `acp agent quote-tokens` to list them",
+    )
+    .option(
+      "--pool-fee <fee>",
+      "Occupy only: Uniswap v4 pool fee in hundredths of a bip, 10000–30000 (default 10000 = 1%)",
+    )
+    .option("--tax-bips <bips>", "Occupy only: trading tax in bips (default 100)")
+    .option(
+      "--no-thicken-liquidity",
+      "Occupy only: disable liquidity thickening (on by default)",
+    )
     .option("--configure", "Show advanced launch configuration options")
     .action(async (opts, cmd) => {
       const { agentApi } = await getClient();
@@ -1492,6 +1559,158 @@ export function registerAgentCommands(program: Command): void {
           ),
         );
         return;
+      }
+
+      // Step 2c: Launchpad. Occupy is a different venue with a different set
+      // of knobs; the Virtuals-only economics flags are rejected rather than
+      // silently dropped, since they shape a launch permanently.
+      const launchpad: "VIRTUALS" | "OCCUPY" =
+        String(opts.launchpad ?? "virtuals").toLowerCase() === "occupy"
+          ? "OCCUPY"
+          : "VIRTUALS";
+
+      if (opts.launchpad !== undefined) {
+        const requested = String(opts.launchpad).toLowerCase();
+        if (!["virtuals", "occupy"].includes(requested)) {
+          outputError(
+            json,
+            `Unknown launchpad: ${opts.launchpad}. Must be "virtuals" or "occupy".`,
+          );
+          return;
+        }
+      }
+
+      const isOccupy = launchpad === "OCCUPY";
+
+      if (!isOccupy) {
+        // Silently dropping these would be worse than refusing them: a
+        // forgotten --launchpad occupy would spend --prebuy as VIRTUAL on a
+        // paid Virtuals launch, which is irreversible.
+        const occupyOnly = [
+          opts.name !== undefined && "--name",
+          opts.quoteToken !== undefined && "--quote-token",
+          opts.poolFee !== undefined && "--pool-fee",
+          opts.taxBips !== undefined && "--tax-bips",
+          opts.thickenLiquidity === false && "--no-thicken-liquidity",
+        ].filter(Boolean) as string[];
+        if (occupyOnly.length > 0) {
+          outputError(
+            json,
+            new CliError(
+              `${occupyOnly.join(", ")} ${
+                occupyOnly.length === 1 ? "is" : "are"
+              } only supported on the Occupy launchpad.`,
+              "UNSUPPORTED_LAUNCH_OPTION",
+              "Add --launchpad occupy, or drop the flag. On the Virtuals launchpad the token takes the agent's name and the curve is priced in VIRTUAL.",
+            ),
+          );
+          return;
+        }
+      }
+
+      const willPickQuoteToken = Boolean(opts.configure) && !json;
+      if (isOccupy && !opts.quoteToken && !willPickQuoteToken) {
+        let choices = "run `acp agent quote-tokens` to list them";
+        try {
+          const tokens = await agentApi.listOccupyQuoteTokens(
+            Number(opts.chainId ?? 8453),
+          );
+          if (tokens.length) {
+            choices = tokens.map((t) => `${t.symbol} (${t.name})`).join(", ");
+          }
+        } catch {
+          // Listing is a convenience; the flag is required either way.
+        }
+        outputError(
+          json,
+          new CliError(
+            "--quote-token is required on the Occupy launchpad.",
+            "MISSING_QUOTE_TOKEN",
+            `It names the asset your token is priced against, and there is no default — it decides what the token trades against. Available: ${choices}`,
+          ),
+        );
+        return;
+      }
+
+      if (isOccupy) {
+        const virtualsOnly = [
+          opts.acf && "--acf",
+          opts["60Days"] && "--60-days",
+          opts.airdropPercent !== undefined && "--airdrop-percent",
+          opts.robotics && "--robotics",
+        ].filter(Boolean) as string[];
+        if (virtualsOnly.length > 0) {
+          outputError(
+            json,
+            new CliError(
+              `${virtualsOnly.join(", ")} ${
+                virtualsOnly.length === 1 ? "is" : "are"
+              } not supported on the Occupy launchpad.`,
+              "UNSUPPORTED_LAUNCH_OPTION",
+              "Drop the flag, or launch on the Virtuals launchpad instead.",
+            ),
+          );
+          return;
+        }
+      }
+
+      // Occupy offers only off or 60s — narrower than BondingV5's 0-2, and
+      // narrower still than the six schedules its contract would accept.
+      const antiSniperChoices = isOccupy
+        ? [
+            { value: 1, label: "60 seconds (default)" },
+            { value: 0, label: "None (0 seconds)" },
+          ]
+        : [
+            { value: 1, label: "60 seconds (default)" },
+            { value: 0, label: "None (0 seconds)" },
+            { value: 2, label: "98 minutes" },
+          ];
+
+      let antiSniperTaxType = 1; // default: 60 seconds
+      if (opts.antiSniper !== undefined) {
+        const parsed = Number(opts.antiSniper);
+        const allowed = antiSniperChoices.map((c) => c.value);
+        if (!allowed.includes(parsed)) {
+          outputError(
+            json,
+            `Invalid anti-sniper type: ${opts.antiSniper}. Must be one of ${allowed
+              .sort((a, b) => a - b)
+              .join(", ")}.`,
+          );
+          return;
+        }
+        antiSniperTaxType = parsed;
+      }
+
+      // Step 4b: Occupy launch settings. poolFee is bounded on-chain by
+      // AssetConfig to [MIN_POOL_FEE, MAX_POOL_FEE]; catching it here beats a
+      // revert after the draft already exists upstream.
+      let poolFee: number | undefined;
+      let taxBips: number | undefined;
+      if (isOccupy) {
+        if (opts.poolFee !== undefined) {
+          const parsed = Number(opts.poolFee);
+          if (!Number.isInteger(parsed) || parsed < 10000 || parsed > 30000) {
+            outputError(
+              json,
+              `Invalid --pool-fee value: ${opts.poolFee}. Must be an integer between 10000 (1%) and 30000 (3%).`,
+            );
+            return;
+          }
+          poolFee = parsed;
+        }
+        if (opts.taxBips !== undefined) {
+          const parsed = Number(opts.taxBips);
+          if (!Number.isInteger(parsed) || parsed < 0 || parsed > 10000) {
+            outputError(
+              json,
+              `Invalid --tax-bips value: ${opts.taxBips}. Must be an integer between 0 and 10000.`,
+            );
+            return;
+          }
+          taxBips = parsed;
+        }
       }
 
       let selected: Agent;
@@ -1601,6 +1820,72 @@ export function registerAgentCommands(program: Command): void {
         );
       }
 
+      let quoteTokenInput: string | undefined = opts.quoteToken
+        ? String(opts.quoteToken)
+        : undefined;
+
+      if (isOccupy && isSolanaChainId(selectedChain.id)) {
+        outputError(
+          json,
+          new CliError(
+            "The Occupy launchpad does not support Solana.",
+            "UNSUPPORTED_CHAIN",
+            "Pick an EVM chain, or launch on the Virtuals launchpad instead.",
+          ),
+        );
+        return;
+      }
+
+      // Step 3a: Quote asset. Required on Occupy and impossible to guess, so
+      // --configure offers the allow-list rather than making the user find an
+      // address somewhere else.
+      if (isOccupy && !quoteTokenInput && willPickQuoteToken) {
+        let available;
+        try {
+          available = await agentApi.listOccupyQuoteTokens(selectedChain.id);
+        } catch (err) {
+          outputError(
+            json,
+            `Failed to list quote tokens: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+          return;
+        }
+        if (available.length === 0) {
+          outputError(
+            json,
+            `No quote tokens are available on chain ${selectedChain.id}.`,
+          );
+          return;
+        }
+        const picked = await selectOption(
+          "\nChoose the asset your token's curve is priced against:",
+          available,
+          (t) => `${t.symbol} — ${t.name} (${t.decimals} decimals)`,
+        );
+        quoteTokenInput = picked.symbol;
+      }
+
+      let resolvedQuoteToken: OccupyQuoteToken | undefined;
+      if (isOccupy && quoteTokenInput) {
+        try {
+          resolvedQuoteToken = await resolveQuoteToken(
+            agentApi,
+            selectedChain.id,
+            quoteTokenInput,
+          );
+        } catch (err) {
+          outputError(json, err instanceof Error ? err : String(err));
+          return;
+        }
+        if (!json) {
+          console.log(
+            `\nCurve priced against ${resolvedQuoteToken.symbol} — ${resolvedQuoteToken.name} (${resolvedQuoteToken.decimals} decimals)`,
+          );
+        }
+      }
+
       // Step 3: Input token symbol
       let symbol: string;
       if (opts.symbol) {
@@ -1634,33 +1919,43 @@ export function registerAgentCommands(program: Command): void {
       }
 
       // Step 4: Anti-sniper selection
-      let antiSniperTaxType = 1; // default: 60 seconds
-      if (opts.antiSniper !== undefined) {
-        const parsed = Number(opts.antiSniper);
-        if (![0, 1, 2].includes(parsed)) {
-          outputError(
-            json,
-            `Invalid anti-sniper type: ${opts.antiSniper}. Must be 0, 1, or 2.`,
-          );
-          return;
-        }
-        antiSniperTaxType = parsed;
-      } else if (opts.configure && !json) {
+      // Step 4: Anti-sniper. The flag was validated up front; only the
+      // interactive picker is left.
+      if (opts.antiSniper === undefined && opts.configure && !json) {
         const antiSniperChoice = await selectOption(
           "\nChoose anti-sniper protection duration:",
-          [
-            { value: 1, label: "60 seconds (default)" },
-            { value: 0, label: "None (0 seconds)" },
-            { value: 2, label: "98 minutes" },
-          ],
+          antiSniperChoices,
           (opt) => opt.label,
         );
         antiSniperTaxType = antiSniperChoice.value;
       }
 
-      // Step 5: Pre-buy amount (VIRTUAL to spend at launch)
+      // Step 5: Pre-buy amount. On Virtuals this is VIRTUAL; on Occupy it is
+      // the quote asset the curve trades against, whose decimals need not be
+      // 18 — so the amount is converted against that token's own decimals,
+      // which means the quote token has to be named explicitly.
       let prebuyVirtualBaseUnit = 0n;
-      if (opts.prebuy !== undefined) {
+      if (isOccupy && opts.prebuy !== undefined) {
+        // Denominated in the quote asset, whose decimals are not uniform
+        // (equities are 8, other allow-listed assets 18).
+        const baseUnit = convertPrebuyWithDecimals(
+          String(opts.prebuy),
+          (resolvedQuoteToken as OccupyQuoteToken).decimals,
+        );
+        if (baseUnit === null) {
+          outputError(
+            json,
+            `Invalid --prebuy value: ${opts.prebuy}. Must be a non-negative number.`,
+          );
+          return;
+        }
+        if (!json) {
+          console.log(
+            `Pre-buy: ${opts.prebuy} ${(resolvedQuoteToken as OccupyQuoteToken).symbol}`,
+          );
+        }
+        prebuyVirtualBaseUnit = baseUnit;
+      } else if (opts.prebuy !== undefined) {
         const baseUnit = convertPrebuyVirtual(
           String(opts.prebuy),
           selectedChain.id,
@@ -1679,11 +1974,16 @@ export function registerAgentCommands(program: Command): void {
           output: process.stdout,
         });
         try {
+          const currency = resolvedQuoteToken
+            ? `${resolvedQuoteToken.symbol} (${resolvedQuoteToken.name})`
+            : "VIRTUAL tokens";
           const raw = await prompt(
             rl,
-            "\nPre-buy amount in VIRTUAL tokens (blank to skip): ",
+            `\nPre-buy amount in ${currency} (blank to skip): `,
           );
-          const base = convertPrebuyVirtual(raw, selectedChain.id);
+          const base = resolvedQuoteToken
+            ? convertPrebuyWithDecimals(raw, resolvedQuoteToken.decimals)
+            : convertPrebuyVirtual(raw, selectedChain.id);
           if (base === null) {
             outputError(
               json,
@@ -1697,11 +1997,13 @@ export function registerAgentCommands(program: Command): void {
         }
       }
 
-      // Step 6: Capital Formation (ACF) toggle
+      // Step 6: Capital Formation (ACF) toggle. Occupy has no such concept —
+      // the flags were already refused above, so the interactive flow must not
+      // ask for the same values and forward them into an irreversible launch.
       let needAcf = false;
       if (opts.acf) {
         needAcf = true;
-      } else if (opts.configure && !json) {
+      } else if (opts.configure && !json && !isOccupy) {
         const rl = readline.createInterface({
           input: process.stdin,
           output: process.stdout,
@@ -1727,7 +2029,7 @@ export function registerAgentCommands(program: Command): void {
       {
         if (opts["60Days"]) {
           isProject60days = true;
-        } else if (opts.configure && !json) {
+        } else if (opts.configure && !json && !isOccupy) {
           const rl = readline.createInterface({
             input: process.stdin,
             output: process.stdout,
@@ -1763,7 +2065,7 @@ export function registerAgentCommands(program: Command): void {
             return;
           }
           airdropPercent = n;
-        } else if (opts.configure && !json) {
+        } else if (opts.configure && !json && !isOccupy) {
           const rl = readline.createInterface({
             input: process.stdin,
             output: process.stdout,
@@ -1792,7 +2094,7 @@ export function registerAgentCommands(program: Command): void {
       let isRobotics = false;
       if (opts.robotics) {
         isRobotics = true;
-      } else if (opts.configure && !json) {
+      } else if (opts.configure && !json && !isOccupy) {
         const rl = readline.createInterface({
           input: process.stdin,
           output: process.stdout,
@@ -1828,6 +2130,19 @@ export function registerAgentCommands(program: Command): void {
           prebuyVirtualBaseUnit,
           walletAddress: selected.walletAddress,
           onProgress,
+          ...(resolvedQuoteToken && { quoteToken: resolvedQuoteToken }),
+          ...(isOccupy && {
+            launchOptions: {
+              launchpad,
+              ...(opts.name && { name: String(opts.name) }),
+              ...(quoteTokenInput && {
+                quoteToken: resolvedQuoteToken?.address ?? quoteTokenInput,
+              }),
+              ...(poolFee !== undefined && { poolFee }),
+              ...(taxBips !== undefined && { taxBips }),
+              thickenLiquidity: opts.thickenLiquidity !== false,
+            },
+          }),
         };
 
         result = isSolanaChainId(selectedChain.id)
@@ -1850,6 +2165,7 @@ export function registerAgentCommands(program: Command): void {
           agentName: selected.name,
           virtualId: result.virtualId,
           txHash: result.txHash,
+          launchpad,
           needAcf,
           isProject60days,
           airdropPercent,
