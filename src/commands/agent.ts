@@ -49,13 +49,15 @@ import {
   EVM_MAINNET_CHAINS,
   EVM_TESTNET_CHAINS,
 } from "@virtuals-protocol/acp-node-v2";
-import type { OccupyQuoteToken } from "../lib/api/agent";
 import {
   tokenizeOnSolana,
   tokenizeOnEvm,
   convertPrebuyVirtual,
   convertPrebuyWithDecimals,
-  resolveQuoteToken,
+  parsePoolFee,
+  parseQuoteTokenAddress,
+  readQuoteTokenDecimals,
+  QUOTE_TOKEN_DOCS_URL,
 } from "../lib/tokenize";
 import * as viemChains from "viem/chains";
 import { formatChainId, solanaChainId, isSolanaChainId } from "../lib/chains";
@@ -1427,49 +1429,6 @@ export function registerAgentCommands(program: Command): void {
     });
 
   agent
-    .command("quote-tokens")
-    .description(
-      "List the assets an Occupy launch can be priced against (use one with `tokenize --launchpad occupy --quote-token`)",
-    )
-    .option("--chain-id <id>", "Chain ID (default: 8453, Base)")
-    .action(async (opts, cmd) => {
-      const { agentApi } = await getClient();
-      const json = isJson(cmd);
-      const chainId = Number(opts.chainId ?? 8453);
-
-      let tokens;
-      try {
-        tokens = await agentApi.listOccupyQuoteTokens(chainId);
-      } catch (err) {
-        outputError(
-          json,
-          `Failed to list quote tokens: ${
-            err instanceof Error ? err.message : String(err)
-          }`,
-        );
-        return;
-      }
-
-      if (json) {
-        outputResult(json, { chainId, quoteTokens: tokens });
-        return;
-      }
-
-      if (tokens.length === 0) {
-        console.log(`No quote tokens available on chain ${chainId}.`);
-        return;
-      }
-
-      console.log(`\n${c.bold(`Occupy quote assets [${formatChainId(chainId)}]`)}`);
-      printTable(
-        tokens.map((t) => [
-          t.symbol,
-          `${t.name} — ${t.address} (${t.decimals} decimals)`,
-        ]),
-      );
-    });
-
-  agent
     .command("tokenize")
     .description("Tokenize the active agent on a blockchain")
     .option("--chain-id <id>", "Chain ID to tokenize on")
@@ -1505,16 +1464,19 @@ export function registerAgentCommands(program: Command): void {
     )
     .option(
       "--quote-token <address>",
-      "Occupy only, REQUIRED: the asset the curve is priced against — a symbol (e.g. NVDAc, TSLAc, MSFTc) or an address. Run `acp agent quote-tokens` to list them",
+      "Occupy only, REQUIRED: address of the asset the curve is priced against. Addresses are listed at https://os.virtuals.io/agent-identity/token/overview#occupy-quote-assets",
     )
     .option(
       "--pool-fee <fee>",
-      "Occupy only: Uniswap v4 pool fee in hundredths of a bip, 10000–30000 (default 10000 = 1%)",
+      "Occupy only: the trading fee every buy and sell of your token pays. One of 1%, 2%, 3% — pass 1, 2 or 3, or the raw unit 10000, 20000 or 30000. Default 1%. Permanent",
     )
-    .option("--tax-bips <bips>", "Occupy only: trading tax in bips (default 100)")
+    .option(
+      "--take-fees",
+      "Occupy only: pay your 30% creator share of the trading fee out to the agent wallet as it accrues. Off by default, which leaves it in the pool as permanent liquidity",
+    )
     .option(
       "--no-thicken-liquidity",
-      "Occupy only: disable liquidity thickening (on by default)",
+      "Occupy only: alias for --take-fees (this is the on-chain name for the same switch)",
     )
     .option("--configure", "Show advanced launch configuration options")
     .action(async (opts, cmd) => {
@@ -1590,8 +1552,7 @@ export function registerAgentCommands(program: Command): void {
           opts.name !== undefined && "--name",
           opts.quoteToken !== undefined && "--quote-token",
           opts.poolFee !== undefined && "--pool-fee",
-          opts.taxBips !== undefined && "--tax-bips",
-          opts.thickenLiquidity === false && "--no-thicken-liquidity",
+          (opts.takeFees || opts.thickenLiquidity === false) && "--take-fees",
         ].filter(Boolean) as string[];
         if (occupyOnly.length > 0) {
           outputError(
@@ -1610,23 +1571,12 @@ export function registerAgentCommands(program: Command): void {
 
       const willPickQuoteToken = Boolean(opts.configure) && !json;
       if (isOccupy && !opts.quoteToken && !willPickQuoteToken) {
-        let choices = "run `acp agent quote-tokens` to list them";
-        try {
-          const tokens = await agentApi.listOccupyQuoteTokens(
-            Number(opts.chainId ?? 8453),
-          );
-          if (tokens.length) {
-            choices = tokens.map((t) => `${t.symbol} (${t.name})`).join(", ");
-          }
-        } catch {
-          // Listing is a convenience; the flag is required either way.
-        }
         outputError(
           json,
           new CliError(
             "--quote-token is required on the Occupy launchpad.",
             "MISSING_QUOTE_TOKEN",
-            `It names the asset your token is priced against, and there is no default — it decides what the token trades against. Available: ${choices}`,
+            `It names the asset your token is priced against, and there is no default — it decides what the token trades against. Pass the asset's address; they are listed at ${QUOTE_TOKEN_DOCS_URL}.`,
           ),
         );
         return;
@@ -1687,29 +1637,27 @@ export function registerAgentCommands(program: Command): void {
       // AssetConfig to [MIN_POOL_FEE, MAX_POOL_FEE]; catching it here beats a
       // revert after the draft already exists upstream.
       let poolFee: number | undefined;
-      let taxBips: number | undefined;
+
       if (isOccupy) {
         if (opts.poolFee !== undefined) {
-          const parsed = Number(opts.poolFee);
-          if (!Number.isInteger(parsed) || parsed < 10000 || parsed > 30000) {
+          const parsed = parsePoolFee(opts.poolFee);
+          if (parsed === null) {
             outputError(
               json,
-              `Invalid --pool-fee value: ${opts.poolFee}. Must be an integer between 10000 (1%) and 30000 (3%).`,
+              new CliError(
+                `Invalid --pool-fee value: ${opts.poolFee}.`,
+                "UNSUPPORTED_LAUNCH_OPTION",
+                "Occupy offers three rates: 1%, 2% or 3%. Pass `1`, `2` or `3` (or `1%`/`2%`/`3%`), or the raw contract unit `10000`, `20000` or `30000`. Nothing in between — 1.5% is not offered.",
+              ),
             );
             return;
           }
           poolFee = parsed;
-        }
-        if (opts.taxBips !== undefined) {
-          const parsed = Number(opts.taxBips);
-          if (!Number.isInteger(parsed) || parsed < 0 || parsed > 10000) {
-            outputError(
-              json,
-              `Invalid --tax-bips value: ${opts.taxBips}. Must be an integer between 0 and 10000.`,
+          if (!json && String(opts.poolFee).trim() !== String(parsed)) {
+            console.log(
+              `Trading fee: ${parsed / 10000}% (--pool-fee ${parsed})`,
             );
-            return;
           }
-          taxBips = parsed;
         }
       }
 
@@ -1726,22 +1674,28 @@ export function registerAgentCommands(program: Command): void {
         return;
       }
 
-      // Step 2b: Ensure agent has not already been tokenized
+      // Step 2b: Note an existing token, but do not refuse.
+      //
+      // This used to hard-block on any chain row carrying a tokenAddress, on
+      // the rule that an agent is tokenized once. That predates the second
+      // launchpad: an agent can hold a Virtuals token and launch on Occupy as
+      // well, and nothing server-side enforces the old rule — it was a CLI
+      // policy with no backend counterpart. `chains[]` has no launchpad field
+      // either, so the check could not tell which venue an existing token came
+      // from and refused both.
+      //
+      // Still worth saying out loud, since a launch is irreversible and a
+      // duplicate is usually a mistake rather than an intent.
       const existingToken = selected.chains?.find((c) => c.tokenAddress);
-      if (existingToken) {
-        outputError(
-          json,
-          new CliError(
-            `Agent ${
-              selected.name
-            } is already tokenized on chain ${formatChainId(
+      if (existingToken && !json) {
+        console.log(
+          c.yellow(
+            `\nNote: ${selected.name} already has a token on ${formatChainId(
               existingToken.chainId,
-            )}.`,
-            "ALREADY_TOKENIZED",
-            "Each agent can only be tokenized once on a single chain.",
+            )}. ` +
+              `Launching again creates an additional, separate token.`,
           ),
         );
-        return;
       }
 
       // Step 3: Resolve chain options from the EVM & Solana provider
@@ -1840,51 +1794,64 @@ export function registerAgentCommands(program: Command): void {
       // --configure offers the allow-list rather than making the user find an
       // address somewhere else.
       if (isOccupy && !quoteTokenInput && willPickQuoteToken) {
-        let available;
-        try {
-          available = await agentApi.listOccupyQuoteTokens(selectedChain.id);
-        } catch (err) {
-          outputError(
-            json,
-            `Failed to list quote tokens: ${
-              err instanceof Error ? err.message : String(err)
-            }`,
-          );
-          return;
-        }
-        if (available.length === 0) {
-          outputError(
-            json,
-            `No quote tokens are available on chain ${selectedChain.id}.`,
-          );
-          return;
-        }
-        const picked = await selectOption(
-          "\nChoose the asset your token's curve is priced against:",
-          available,
-          (t) => `${t.symbol} — ${t.name} (${t.decimals} decimals)`,
+        // No menu to offer: the allow-list is published rather than fetched, so
+        // the prompt sends the user there and takes the address back.
+        console.log(
+          `\nThe asset your token's curve is priced against.` +
+            `\nAllow-listed assets, with addresses and decimals: ${QUOTE_TOKEN_DOCS_URL}`,
         );
-        quoteTokenInput = picked.symbol;
+        const rl = readline.createInterface({
+          input: process.stdin,
+          output: process.stdout,
+        });
+        try {
+          quoteTokenInput = (
+            await prompt(rl, "Enter the quote asset's contract address: ")
+          ).trim();
+        } finally {
+          rl.close();
+        }
+        if (!quoteTokenInput) {
+          outputError(
+            json,
+            new CliError(
+              "A quote asset is required on the Occupy launchpad.",
+              "MISSING_QUOTE_TOKEN",
+              `It decides what your token trades against, and there is no default. Addresses are listed at ${QUOTE_TOKEN_DOCS_URL}.`,
+            ),
+          );
+          return;
+        }
       }
 
-      let resolvedQuoteToken: OccupyQuoteToken | undefined;
+      let quoteTokenAddress: `0x${string}` | undefined;
       if (isOccupy && quoteTokenInput) {
         try {
-          resolvedQuoteToken = await resolveQuoteToken(
-            agentApi,
-            selectedChain.id,
-            quoteTokenInput,
-          );
+          quoteTokenAddress = parseQuoteTokenAddress(quoteTokenInput);
         } catch (err) {
           outputError(json, err instanceof Error ? err : String(err));
           return;
         }
         if (!json) {
-          console.log(
-            `\nCurve priced against ${resolvedQuoteToken.symbol} — ${resolvedQuoteToken.name} (${resolvedQuoteToken.decimals} decimals)`,
-          );
+          console.log(`\nCurve priced against ${quoteTokenAddress}`);
         }
       }
+
+      /**
+       * Decimals, read once and only if something needs them. Nothing but a
+       * pre-buy does, and most Occupy launches have none — so a launch that
+       * spends nothing makes no on-chain read at all.
+       */
+      let quoteDecimals: number | undefined;
+      const getQuoteDecimals = async (): Promise<number> => {
+        if (quoteDecimals === undefined) {
+          quoteDecimals = await readQuoteTokenDecimals(
+            selectedChain.id,
+            quoteTokenAddress as `0x${string}`,
+          );
+        }
+        return quoteDecimals;
+      };
 
       // Step 3: Input token symbol
       let symbol: string;
@@ -1940,7 +1907,7 @@ export function registerAgentCommands(program: Command): void {
         // (equities are 8, other allow-listed assets 18).
         const baseUnit = convertPrebuyWithDecimals(
           String(opts.prebuy),
-          (resolvedQuoteToken as OccupyQuoteToken).decimals,
+          await getQuoteDecimals(),
         );
         if (baseUnit === null) {
           outputError(
@@ -1950,9 +1917,7 @@ export function registerAgentCommands(program: Command): void {
           return;
         }
         if (!json) {
-          console.log(
-            `Pre-buy: ${opts.prebuy} ${(resolvedQuoteToken as OccupyQuoteToken).symbol}`,
-          );
+          console.log(`Pre-buy: ${opts.prebuy} of ${quoteTokenAddress}`);
         }
         prebuyVirtualBaseUnit = baseUnit;
       } else if (opts.prebuy !== undefined) {
@@ -1974,15 +1939,15 @@ export function registerAgentCommands(program: Command): void {
           output: process.stdout,
         });
         try {
-          const currency = resolvedQuoteToken
-            ? `${resolvedQuoteToken.symbol} (${resolvedQuoteToken.name})`
+          const currency = quoteTokenAddress
+            ? `the quote asset ${quoteTokenAddress}`
             : "VIRTUAL tokens";
           const raw = await prompt(
             rl,
             `\nPre-buy amount in ${currency} (blank to skip): `,
           );
-          const base = resolvedQuoteToken
-            ? convertPrebuyWithDecimals(raw, resolvedQuoteToken.decimals)
+          const base = quoteTokenAddress
+            ? convertPrebuyWithDecimals(raw, await getQuoteDecimals())
             : convertPrebuyVirtual(raw, selectedChain.id);
           if (base === null) {
             outputError(
@@ -2130,17 +2095,20 @@ export function registerAgentCommands(program: Command): void {
           prebuyVirtualBaseUnit,
           walletAddress: selected.walletAddress,
           onProgress,
-          ...(resolvedQuoteToken && { quoteToken: resolvedQuoteToken }),
           ...(isOccupy && {
             launchOptions: {
               launchpad,
               ...(opts.name && { name: String(opts.name) }),
               ...(quoteTokenInput && {
-                quoteToken: resolvedQuoteToken?.address ?? quoteTokenInput,
+                quoteToken: quoteTokenAddress ?? quoteTokenInput,
               }),
               ...(poolFee !== undefined && { poolFee }),
-              ...(taxBips !== undefined && { taxBips }),
-              thickenLiquidity: opts.thickenLiquidity !== false,
+              // Two spellings of one switch: --take-fees reads the way the
+              // choice actually lands (the creator's cut is paid out), and
+              // --no-thicken-liquidity is the on-chain name for it.
+              thickenLiquidity: !(
+                opts.takeFees || opts.thickenLiquidity === false
+              ),
             },
           }),
         };

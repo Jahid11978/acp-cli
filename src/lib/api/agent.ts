@@ -1408,9 +1408,6 @@ export class AgentApi {
     if (launchOptions?.poolFee !== undefined) {
       payload.poolFee = launchOptions.poolFee;
     }
-    if (launchOptions?.taxBips !== undefined) {
-      payload.taxBips = launchOptions.taxBips;
-    }
     if (launchOptions?.thickenLiquidity !== undefined) {
       payload.thickenLiquidity = launchOptions.thickenLiquidity;
     }
@@ -1478,15 +1475,6 @@ export class AgentApi {
     return res.data;
   }
 
-  /** The assets an Occupy launch can be priced against on this chain. */
-  async listOccupyQuoteTokens(chainId: number): Promise<OccupyQuoteToken[]> {
-    const res = await this.client.get<{ data: OccupyQuoteToken[] }>(
-      `/agents/launchpads/occupy/quote-tokens`,
-      { chainId: chainId.toString() }
-    );
-    return res.data;
-  }
-
   async getActiveSubscription(
     clientAgentId: string,
     providerWalletAddress: string,
@@ -1518,26 +1506,23 @@ export class AgentApi {
 }
 
 /** Options only the Occupy launchpad understands. */
-/** An asset an Occupy curve can be priced against. */
-export interface OccupyQuoteToken {
-  address: string;
-  symbol: string;
-  name: string;
-  decimals: number;
-}
-
 export interface OccupyLaunchOptions {
   launchpad?: "VIRTUALS" | "OCCUPY";
   /** Token name on Occupy. Defaults to the agent's name. */
   name?: string;
   /**
-   * Asset the curve is priced against — a symbol (`NVDAc`) or an address.
-   * Required on Occupy.
+   * Address of the asset the curve is priced against. Required on Occupy, and
+   * an address rather than a ticker: see QUOTE_TOKEN_DOCS_URL.
    */
   quoteToken?: string;
   /** Uniswap v4 pool fee in hundredths of a bip (10000 = 1%). */
   poolFee?: number;
-  taxBips?: number;
+  /**
+   * Whether the creator's 30% share of the trading fee stays in the pool.
+   * `true` (the launchpad default) leaves it there as permanent liquidity;
+   * `false` pays it out to the agent wallet — Occupy's own UI presents this
+   * inverted, as a "take fees" switch, and so does `--take-fees`.
+   */
   thickenLiquidity?: boolean;
 }
 

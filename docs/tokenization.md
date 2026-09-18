@@ -6,7 +6,7 @@ The `acp agent tokenize` command launches a token for the **active agent**.
 
 1. An active agent is set — run `acp agent use` if you haven't.
 2. A signer is registered for the active agent — run `acp agent add-signer` if you haven't. `tokenize` will refuse to run without a signer.
-3. The agent wallet holds enough of the venue's currency: **VIRTUAL** on the Virtuals launchpad, to cover the launch fee plus any pre-buy; **the quote asset** on Occupy, to cover a pre-buy (there is no launch fee, so with no pre-buy the wallet needs nothing at all). Either way the agent spends from its own wallet.
+3. The agent wallet holds enough of the venue's currency: **VIRTUAL** on the Virtuals launchpad, to cover the launch fee plus any pre-buy; **the quote asset** on Occupy, to cover a pre-buy (there is no launch fee, so with no pre-buy the wallet needs none of it). Either way the wallet also needs a **gas token**: Gas is paid **from the agent wallet in an ERC-20** — USDC, USDT or VIRTUAL, whichever it holds — rather than in ETH. So the wallet needs no ETH, but it is not true that it needs nothing: without a small balance of one of those three the launch is refused with "Not enough balance to cover the network fee".. Either way the agent spends from its own wallet.
 4. The agent wallet has enough **ETH** to cover gas fees for the on-chain transactions, unless gas is sponsored for it.
 
 ## Chain selection
@@ -80,8 +80,9 @@ Marks the virtual as an **Embodied** (robotics-capable) agent and makes it eligi
 Occupy differs in three ways that matter at the CLI:
 
 - **Single-phase and free.** One `launch` call mints the token, opens the Uniswap v4 pool and settles the pre-buy. There is no launch fee, so the agent wallet needs no VIRTUAL — only gas, which is sponsored for ACP agent wallets.
-- **The curve is quoted in a tokenized equity**, not VIRTUAL. `--quote-token` picks it, and it is **required** — there is no default, because the choice decides which stock your token trades against. Pass a **symbol** (`NVDAc`, `TSLAc`, `MSFTc`) or an address; list what is available with `acp agent quote-tokens`. The allow-listed assets on Base are share tokens — `NVDAc` (NVIDIA), `AAPLc` (Apple), `TSLAc` (Tesla), `METAc`, `GOOGLc`, `MSTRc`, `AMZNc`, `SPCXc` (SpaceX) — so an agent token trades against a stock rather than against VIRTUAL or a stablecoin. **WETH and USDC are not allow-listed.** The backend checks `AssetConfig` before creating anything and fails with a clear message otherwise.
-- **These tokens carry 8 decimals, not 18.** `--prebuy 5` means 5 shares' worth, and the CLI reads the token's decimals to convert it — assuming 18 would overspend by a factor of 10^10.
+- **The curve is quoted in a tokenized equity**, not VIRTUAL. `--quote-token` picks it, and it is **required** — there is no default, because the choice decides which stock your token trades against. **WETH, USDC and VIRTUAL are not allow-listed.** The backend reads `AssetConfig` before creating anything and rejects an asset that is not allowed.
+- **`--quote-token` takes an address, not a ticker.** A ticker would have to be resolved against the full allow-list, and `AssetConfig` offers only a point lookup — enumerating it means an archive-depth log scan that public RPCs refuse. So the list is **published** rather than fetched: look the asset up at <https://os.virtuals.io/agent-identity/token/overview#occupy-quote-assets> and pass its address.
+- **Decimals vary per asset.** The share tokens are 8-decimal, `wtFGI` is 18. `--prebuy 5` means 5 units' worth and the CLI reads the token's own `decimals()` to convert it — assuming 18 against an 8-decimal asset would overspend by a factor of 10^10.
 - **A pre-buy is denominated in the quote asset**, so `--prebuy` on Occupy requires `--quote-token`.
 
 Occupy runs on EVM chains only; Solana launches go through the Virtuals launchpad.
@@ -89,44 +90,88 @@ Occupy runs on EVM chains only; Solana launches go through the Virtuals launchpa
 | Flag | Default | Notes |
 | --- | --- | --- |
 | `--name <name>` | the agent's name | Token name on-chain. Occupy names the token independently of the agent |
-| `--quote-token <symbol\|address>` | **required, no default** | The asset the curve is priced against, e.g. `NVDAc`. See `acp agent quote-tokens` |
-| `--pool-fee <fee>` | `10000` | Uniswap v4 pool fee in hundredths of a bip; on-chain bounds are 10000 (1%) – 30000 (3%) |
-| `--tax-bips <bips>` | `100` | Trading tax, in bips |
-| `--no-thicken-liquidity` | thickening on | Disables liquidity thickening |
-| `--anti-sniper <0\|1>` | `1` | Occupy offers only off or 60 seconds |
+| `--quote-token <address>` | **required, no default** | Address of the asset the curve is priced against. Listed at [EconomyOS](https://os.virtuals.io/agent-identity/token/overview#occupy-quote-assets) |
+| `--pool-fee <fee>` | `1%` | **The trading fee every buy and sell pays.** One of 1%, 2%, 3% — pass `1`, `2`, `3` or `10000`, `20000`, `30000` |
+| `--take-fees` | **off** | Pay your 30% creator share of that fee to the agent wallet. Off leaves it in the pool |
+| `--no-thicken-liquidity` | — | Alias for `--take-fees` — the on-chain name for the same switch |
+| `--anti-sniper <0\|1>` | `1` | `0` off, `1` 60 seconds. The contract accepts `2` (98 min) but Occupy does not offer it, so the API rejects it |
 | `--prebuy <amount>` | none | In **quote-token** units, not VIRTUAL. Requires `--quote-token` |
 
-```bash
-# What can this curve be priced against?
-acp agent quote-tokens --chain-id 8453
+Addresses below come from the published allow-list: <https://os.virtuals.io/agent-identity/token/overview#occupy-quote-assets>
 
+```bash
 # Launch on Occupy, priced against NVIDIA
 acp agent tokenize --launchpad occupy --chain-id 8453 --symbol MYTOKEN \
-  --quote-token NVDAc
+  --quote-token 0xb20000000000000000000078ee7ce2fE4908108C
 
 # Name the token something other than the agent's name
 acp agent tokenize --launchpad occupy --chain-id 8453 --symbol MYTOKEN \
-  --name "My Token" --quote-token NVDAc
+  --name "My Token" --quote-token 0xb20000000000000000000078ee7ce2fE4908108C
 
 # No anti-sniper protection
 acp agent tokenize --launchpad occupy --chain-id 8453 --symbol MYTOKEN \
-  --quote-token NVDAc --anti-sniper 0
+  --quote-token 0xb20000000000000000000078ee7ce2fE4908108C --anti-sniper 0
 
 # 3% pool fee, no liquidity thickening
 acp agent tokenize --launchpad occupy --chain-id 8453 --symbol MYTOKEN \
-  --quote-token TSLAc --pool-fee 30000 --no-thicken-liquidity
+  --quote-token 0xb2000000000000000000001e800a7f5189430cD0 --pool-fee 30000 --no-thicken-liquidity
 
 # Pre-buy 5 shares' worth of the quote asset at launch
 acp agent tokenize --launchpad occupy --chain-id 8453 --symbol MYTOKEN \
-  --quote-token NVDAc --prebuy 5
+  --quote-token 0xb20000000000000000000078ee7ce2fE4908108C --prebuy 5
 ```
+
+`--pool-fee` takes one of **three rates — 1%, 2% or 3%** — as either a
+percentage or the contract's own unit (hundredths of a bip, where 1% = 10000):
+
+| You want | Pass either | Not |
+| --- | --- | --- |
+| 1% (default) | `1` or `1%` | `10000` also works |
+| 2% | `2` or `2%` | `20000` also works |
+| 3% | `3` or `3%` | `30000` also works |
+
+**There is nothing in between.** `1.5%` / `15000` is rejected, not rounded —
+Occupy offers exactly these three rates. `100`, `200` and `1000` are not 1%, 2%
+and 0.1%; they are below the contract's floor and rejected too.
+
+
+#### Who gets the trading fee
+
+`--pool-fee` sets the fee **every buy and sell of your token pays**, forever —
+1%, 2% or 3% — 1% by default. It is the only trading cost the
+launch actually sets.
+
+That fee is then split three ways by the launchpad, globally — you don't choose
+the split, and it is not in the launch call. Read live from `AssetConfig` on
+Base:
+
+| Share | Bips | Goes to |
+| --- | --- | --- |
+| `creatorBips` | 3000 | **30% — you, the creator** |
+| `taxVaultBips` | 4000 | 40% — the quote asset's tax vault |
+| `protocolBips` | 3000 | 30% — the protocol |
+
+**`--take-fees` decides what happens to your 30%.** It is **off by default**,
+and off means your cut is left in the pool as permanent liquidity rather than
+paid out. Pass `--take-fees` to have it paid to the agent wallet as it accrues.
+
+```bash
+# Default: your 30% cut stays in the pool, deepening liquidity forever
+acp agent tokenize --launchpad occupy --symbol MYTOKEN --quote-token 0xb200…108C
+
+# Take the cut instead — paid to the agent wallet as trades happen
+acp agent tokenize --launchpad occupy --symbol MYTOKEN --quote-token 0xb200…108C --take-fees
+```
+
+`--no-thicken-liquidity` is the same switch under its on-chain name
+(`thickenLiquidity`), kept because that is what the contract and the API call
+it. Occupy's own UI presents it the way `--take-fees` does.
 
 ## CLI usage
 
 ```
 acp agent tokenize [--chain-id <id>] [--symbol <symbol>] [--anti-sniper <0|1|2>] [--prebuy <virtuals>] [--acf] [--60-days] [--airdrop-percent <percent>] [--robotics] [--configure]
-acp agent quote-tokens [--chain-id <id>]
-acp agent tokenize --launchpad occupy --quote-token <symbol|address> [--chain-id <id>] [--symbol <symbol>] [--name <name>] [--pool-fee <fee>] [--tax-bips <bips>] [--no-thicken-liquidity] [--anti-sniper <0|1|2>] [--prebuy <amount>]
+acp agent tokenize --launchpad occupy --quote-token <address> [--chain-id <id>] [--symbol <symbol>] [--name <name>] [--pool-fee <fee>] [--take-fees] [--anti-sniper <0|1|2>] [--prebuy <amount>]
 ```
 
 - `--chain-id <id>` — chain to launch on. Restricted to what the provider supports.
