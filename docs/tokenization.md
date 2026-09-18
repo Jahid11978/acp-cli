@@ -130,6 +130,7 @@ at least 10000 and every valid percentage is at most 3:
 | 1% (default) | `1`, `1%`, `10000` | `100`, `1000` |
 | 1.5% | `1.5`, `1.5%`, `15000` | `150` |
 | 2% | `2`, `2%`, `20000` | `200` |
+| 2.5% | `2.5`, `2.5%`, `25000` | `250` |
 | 3% (max) | `3`, `3%`, `30000` | `300` |
 
 Occupy allows 1%–3% and nothing outside it. Anything else is rejected with both
