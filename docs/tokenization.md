@@ -94,7 +94,7 @@ Occupy runs on EVM chains only; Solana launches go through the Virtuals launchpa
 | `--pool-fee <fee>` | `1%` | **The trading fee every buy and sell pays.** Percentage (`1`, `1.5%`, `3`) or raw unit (`10000`–`30000`; 1% = 10000) |
 | `--take-fees` | **off** | Pay your 30% creator share of that fee to the agent wallet. Off leaves it in the pool |
 | `--no-thicken-liquidity` | — | Alias for `--take-fees` — the on-chain name for the same switch |
-| `--anti-sniper <0\|1>` | `1` | Occupy offers only off or 60 seconds |
+| `--anti-sniper <0\|1>` | `1` | `0` off, `1` 60 seconds. The contract accepts `2` (98 min) but Occupy does not offer it, so the API rejects it |
 | `--prebuy <amount>` | none | In **quote-token** units, not VIRTUAL. Requires `--quote-token` |
 
 Addresses below come from the published allow-list: <https://os.virtuals.io/agent-identity/token/overview#occupy-quote-assets>
