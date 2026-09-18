@@ -91,7 +91,7 @@ Occupy runs on EVM chains only; Solana launches go through the Virtuals launchpa
 | --- | --- | --- |
 | `--name <name>` | the agent's name | Token name on-chain. Occupy names the token independently of the agent |
 | `--quote-token <address>` | **required, no default** | Address of the asset the curve is priced against. Listed at [EconomyOS](https://os.virtuals.io/agent-identity/token/overview#occupy-quote-assets) |
-| `--pool-fee <fee>` | `1%` | **The trading fee every buy and sell pays.** Percentage (`1`, `1.5%`, `3`) or raw unit (`10000`–`30000`; 1% = 10000) |
+| `--pool-fee <fee>` | `1%` | **The trading fee every buy and sell pays.** One of 1%, 2%, 3% — pass `1`, `2`, `3` or `10000`, `20000`, `30000` |
 | `--take-fees` | **off** | Pay your 30% creator share of that fee to the agent wallet. Off leaves it in the pool |
 | `--no-thicken-liquidity` | — | Alias for `--take-fees` — the on-chain name for the same switch |
 | `--anti-sniper <0\|1>` | `1` | `0` off, `1` 60 seconds. The contract accepts `2` (98 min) but Occupy does not offer it, so the API rejects it |
@@ -121,25 +121,24 @@ acp agent tokenize --launchpad occupy --chain-id 8453 --symbol MYTOKEN \
   --quote-token 0xb20000000000000000000078ee7ce2fE4908108C --prebuy 5
 ```
 
-`--pool-fee` accepts either form — a percentage, or the raw contract unit
-(hundredths of a bip). They cannot be confused, because every valid raw value is
-at least 10000 and every valid percentage is at most 3:
+`--pool-fee` takes one of **three rates — 1%, 2% or 3%** — as either a
+percentage or the contract's own unit (hundredths of a bip, where 1% = 10000):
 
 | You want | Pass either | Not |
 | --- | --- | --- |
-| 1% (default) | `1`, `1%`, `10000` | `100`, `1000` |
-| 1.5% | `1.5`, `1.5%`, `15000` | `150` |
-| 2% | `2`, `2%`, `20000` | `200` |
-| 2.5% | `2.5`, `2.5%`, `25000` | `250` |
-| 3% (max) | `3`, `3%`, `30000` | `300` |
+| 1% (default) | `1` or `1%` | `10000` also works |
+| 2% | `2` or `2%` | `20000` also works |
+| 3% | `3` or `3%` | `30000` also works |
 
-Occupy allows 1%–3% and nothing outside it. Anything else is rejected with both
-forms spelled out rather than silently coerced.
+**There is nothing in between.** `1.5%` / `15000` is rejected, not rounded —
+Occupy offers exactly these three rates. `100`, `200` and `1000` are not 1%, 2%
+and 0.1%; they are below the contract's floor and rejected too.
+
 
 #### Who gets the trading fee
 
 `--pool-fee` sets the fee **every buy and sell of your token pays**, forever —
-`10000` = 1% (default), up to `30000` = 3%. It is the only trading cost the
+1%, 2% or 3% — 1% by default. It is the only trading cost the
 launch actually sets.
 
 That fee is then split three ways by the launchpad, globally — you don't choose

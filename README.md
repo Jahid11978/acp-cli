@@ -260,30 +260,29 @@ Occupy-only flags:
 | --- | --- | --- |
 | `--quote-token <address>` | **required** | Address of the asset the curve is priced against. No default — it decides which stock the token trades against. Addresses at [EconomyOS](https://os.virtuals.io/agent-identity/token/overview#occupy-quote-assets) |
 | `--name <name>` | the agent's name | Token name on-chain. Occupy names the token independently of the agent; rejected on the Virtuals launchpad |
-| `--pool-fee <fee>` | `1%` | **The trading fee every buy and sell of your token pays.** Takes a percentage (`1`, `1.5%`, `3`) or the raw unit (`10000`–`30000`; 1% = 10000). Permanent |
+| `--pool-fee <fee>` | `1%` | **The trading fee every buy and sell of your token pays.** One of 1%, 2% or 3% — pass `1`, `2`, `3` or the raw unit `10000`, `20000`, `30000`. Permanent |
 | `--take-fees` | **off** | Pay your 30% creator share of that fee out to the agent wallet. Off leaves it in the pool as permanent liquidity |
 | `--no-thicken-liquidity` | — | Alias for `--take-fees`; `thickenLiquidity` is the on-chain name |
 
 
-`--pool-fee` accepts either form — a percentage, or the raw contract unit
-(hundredths of a bip). They cannot be confused, because every valid raw value is
-at least 10000 and every valid percentage is at most 3:
+`--pool-fee` takes one of **three rates — 1%, 2% or 3%** — as either a
+percentage or the contract's own unit (hundredths of a bip, where 1% = 10000):
 
 | You want | Pass either | Not |
 | --- | --- | --- |
-| 1% (default) | `1`, `1%`, `10000` | `100`, `1000` |
-| 1.5% | `1.5`, `1.5%`, `15000` | `150` |
-| 2% | `2`, `2%`, `20000` | `200` |
-| 2.5% | `2.5`, `2.5%`, `25000` | `250` |
-| 3% (max) | `3`, `3%`, `30000` | `300` |
+| 1% (default) | `1` or `1%` | `10000` also works |
+| 2% | `2` or `2%` | `20000` also works |
+| 3% | `3` or `3%` | `30000` also works |
 
-Occupy allows 1%–3% and nothing outside it. Anything else is rejected with both
-forms spelled out rather than silently coerced.
+**There is nothing in between.** `1.5%` / `15000` is rejected, not rounded —
+Occupy offers exactly these three rates. `100`, `200` and `1000` are not 1%, 2%
+and 0.1%; they are below the contract's floor and rejected too.
+
 
 #### Who gets the trading fee
 
 `--pool-fee` sets the fee **every buy and sell of your token pays**, forever —
-`10000` = 1% (default), up to `30000` = 3%. It is the only trading cost the
+1%, 2% or 3% — 1% by default. It is the only trading cost the
 launch actually sets.
 
 That fee is then split three ways by the launchpad, globally — you don't choose

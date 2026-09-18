@@ -1468,7 +1468,7 @@ export function registerAgentCommands(program: Command): void {
     )
     .option(
       "--pool-fee <fee>",
-      "Occupy only: the trading fee every buy and sell of your token pays. Give a percentage (1, 1.5%, 3) or the raw unit (10000–30000; 1% = 10000). Default 1%. Permanent",
+      "Occupy only: the trading fee every buy and sell of your token pays. One of 1%, 2%, 3% — pass 1, 2 or 3, or the raw unit 10000, 20000 or 30000. Default 1%. Permanent",
     )
     .option(
       "--take-fees",
@@ -1647,7 +1647,7 @@ export function registerAgentCommands(program: Command): void {
               new CliError(
                 `Invalid --pool-fee value: ${opts.poolFee}.`,
                 "UNSUPPORTED_LAUNCH_OPTION",
-                "Give a percentage between 1 and 3 (`1`, `1.5%`, `3`) or the raw contract unit between 10000 and 30000 — 1% = 10000, 2% = 20000, 3% = 30000. Occupy allows 1%–3%.",
+                "Occupy offers three rates: 1%, 2% or 3%. Pass `1`, `2` or `3` (or `1%`/`2%`/`3%`), or the raw contract unit `10000`, `20000` or `30000`. Nothing in between — 1.5% is not offered.",
               ),
             );
             return;

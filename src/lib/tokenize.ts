@@ -140,21 +140,29 @@ export async function readQuoteTokenDecimals(
   }
 }
 
-/** Occupy's on-chain bounds for the trading fee, in hundredths of a bip. */
-export const MIN_POOL_FEE = 10_000;
-export const MAX_POOL_FEE = 30_000;
+/**
+ * The trading fees Occupy offers: 1%, 2%, 3%, in the contract's unit of
+ * hundredths of a bip.
+ *
+ * `AssetConfig` bounds the fee to [10000, 30000] and would tolerate anything
+ * between, but Occupy's own interface offers exactly these three stops
+ * (`FEE_STOPS = [1, 2, 3]`). The contract is not the product — same reason
+ * anti-sniper is narrowed to 0 and 1 — so a launch through the CLI cannot end
+ * up on a rate the launchpad does not itself offer.
+ */
+export const POOL_FEE_STOPS = [10_000, 20_000, 30_000] as const;
 
 /**
  * Parse `--pool-fee`, accepting either the percentage a human reasons in or the
  * hundredths-of-a-bip the contract takes.
  *
  * The raw unit is the problem: 1% is `10000`, so someone thinking in percent
- * writes `1`, someone thinking in bips writes `100`, and both are rejected by a
- * floor of `10000`. The two forms cannot collide — every valid raw value is
- * >= 10000 and every valid percentage is <= 3 — so both are accepted rather
- * than making the caller guess and retry.
+ * writes `1`, someone thinking in bips writes `100`, and a plausible `1000` is
+ * simply below the floor. The two accepted forms cannot collide — every stop is
+ * >= 10000 and every percentage is <= 3 — so both work.
  *
- * Returns null for anything outside both forms, so the caller can name them.
+ * Returns null for anything else, including in-between values like 1.5%, so the
+ * caller can name the three that exist rather than rounding silently to one.
  */
 export function parsePoolFee(raw: string | number): number | null {
   const text = String(raw).trim().replace(/%$/, "");
@@ -162,14 +170,10 @@ export function parsePoolFee(raw: string | number): number | null {
   const value = Number(text);
   if (!Number.isFinite(value)) return null;
 
-  if (value >= MIN_POOL_FEE && value <= MAX_POOL_FEE) {
-    return Number.isInteger(value) ? value : null;
-  }
-  if (value >= 1 && value <= 3) {
-    const units = Math.round(value * 10_000);
-    return units >= MIN_POOL_FEE && units <= MAX_POOL_FEE ? units : null;
-  }
-  return null;
+  const units = value >= 1 && value <= 3 ? value * 10_000 : value;
+  return POOL_FEE_STOPS.includes(units as (typeof POOL_FEE_STOPS)[number])
+    ? units
+    : null;
 }
 
 /**
