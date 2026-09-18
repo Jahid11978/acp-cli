@@ -6,7 +6,7 @@ The `acp agent tokenize` command launches a token for the **active agent**.
 
 1. An active agent is set — run `acp agent use` if you haven't.
 2. A signer is registered for the active agent — run `acp agent add-signer` if you haven't. `tokenize` will refuse to run without a signer.
-3. The agent wallet holds enough of the venue's currency: **VIRTUAL** on the Virtuals launchpad, to cover the launch fee plus any pre-buy; **the quote asset** on Occupy, to cover a pre-buy (there is no launch fee, so with no pre-buy the wallet needs nothing at all). Either way the agent spends from its own wallet.
+3. The agent wallet holds enough of the venue's currency: **VIRTUAL** on the Virtuals launchpad, to cover the launch fee plus any pre-buy; **the quote asset** on Occupy, to cover a pre-buy (there is no launch fee, so with no pre-buy the wallet needs none of it). Either way the wallet also needs a **gas token**: Gas is paid **from the agent wallet in an ERC-20** — USDC, USDT or VIRTUAL, whichever it holds — rather than in ETH. So the wallet needs no ETH, but it is not true that it needs nothing: without a small balance of one of those three the launch is refused with "Not enough balance to cover the network fee".. Either way the agent spends from its own wallet.
 4. The agent wallet has enough **ETH** to cover gas fees for the on-chain transactions, unless gas is sponsored for it.
 
 ## Chain selection
