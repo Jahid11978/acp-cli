@@ -49,13 +49,13 @@ import {
   EVM_MAINNET_CHAINS,
   EVM_TESTNET_CHAINS,
 } from "@virtuals-protocol/acp-node-v2";
-import type { OccupyQuoteToken } from "../lib/api/agent";
 import {
   tokenizeOnSolana,
   tokenizeOnEvm,
   convertPrebuyVirtual,
   convertPrebuyWithDecimals,
-  resolveQuoteToken,
+  parseQuoteTokenAddress,
+  readQuoteTokenDecimals,
   QUOTE_TOKEN_DOCS_URL,
 } from "../lib/tokenize";
 import * as viemChains from "viem/chains";
@@ -1817,23 +1817,34 @@ export function registerAgentCommands(program: Command): void {
         }
       }
 
-      let resolvedQuoteToken: OccupyQuoteToken | undefined;
+      let quoteTokenAddress: `0x${string}` | undefined;
       if (isOccupy && quoteTokenInput) {
         try {
-          resolvedQuoteToken = await resolveQuoteToken(
-            selectedChain.id,
-            quoteTokenInput,
-          );
+          quoteTokenAddress = parseQuoteTokenAddress(quoteTokenInput);
         } catch (err) {
           outputError(json, err instanceof Error ? err : String(err));
           return;
         }
         if (!json) {
-          console.log(
-            `\nCurve priced against ${resolvedQuoteToken.symbol} — ${resolvedQuoteToken.name} (${resolvedQuoteToken.decimals} decimals)`,
-          );
+          console.log(`\nCurve priced against ${quoteTokenAddress}`);
         }
       }
+
+      /**
+       * Decimals, read once and only if something needs them. Nothing but a
+       * pre-buy does, and most Occupy launches have none — so a launch that
+       * spends nothing makes no on-chain read at all.
+       */
+      let quoteDecimals: number | undefined;
+      const getQuoteDecimals = async (): Promise<number> => {
+        if (quoteDecimals === undefined) {
+          quoteDecimals = await readQuoteTokenDecimals(
+            selectedChain.id,
+            quoteTokenAddress as `0x${string}`,
+          );
+        }
+        return quoteDecimals;
+      };
 
       // Step 3: Input token symbol
       let symbol: string;
@@ -1889,7 +1900,7 @@ export function registerAgentCommands(program: Command): void {
         // (equities are 8, other allow-listed assets 18).
         const baseUnit = convertPrebuyWithDecimals(
           String(opts.prebuy),
-          (resolvedQuoteToken as OccupyQuoteToken).decimals,
+          await getQuoteDecimals(),
         );
         if (baseUnit === null) {
           outputError(
@@ -1899,9 +1910,7 @@ export function registerAgentCommands(program: Command): void {
           return;
         }
         if (!json) {
-          console.log(
-            `Pre-buy: ${opts.prebuy} ${(resolvedQuoteToken as OccupyQuoteToken).symbol}`,
-          );
+          console.log(`Pre-buy: ${opts.prebuy} of ${quoteTokenAddress}`);
         }
         prebuyVirtualBaseUnit = baseUnit;
       } else if (opts.prebuy !== undefined) {
@@ -1923,15 +1932,15 @@ export function registerAgentCommands(program: Command): void {
           output: process.stdout,
         });
         try {
-          const currency = resolvedQuoteToken
-            ? `${resolvedQuoteToken.symbol} (${resolvedQuoteToken.name})`
+          const currency = quoteTokenAddress
+            ? `the quote asset ${quoteTokenAddress}`
             : "VIRTUAL tokens";
           const raw = await prompt(
             rl,
             `\nPre-buy amount in ${currency} (blank to skip): `,
           );
-          const base = resolvedQuoteToken
-            ? convertPrebuyWithDecimals(raw, resolvedQuoteToken.decimals)
+          const base = quoteTokenAddress
+            ? convertPrebuyWithDecimals(raw, await getQuoteDecimals())
             : convertPrebuyVirtual(raw, selectedChain.id);
           if (base === null) {
             outputError(
@@ -2079,13 +2088,12 @@ export function registerAgentCommands(program: Command): void {
           prebuyVirtualBaseUnit,
           walletAddress: selected.walletAddress,
           onProgress,
-          ...(resolvedQuoteToken && { quoteToken: resolvedQuoteToken }),
           ...(isOccupy && {
             launchOptions: {
               launchpad,
               ...(opts.name && { name: String(opts.name) }),
               ...(quoteTokenInput && {
-                quoteToken: resolvedQuoteToken?.address ?? quoteTokenInput,
+                quoteToken: quoteTokenAddress ?? quoteTokenInput,
               }),
               ...(poolFee !== undefined && { poolFee }),
               ...(taxBips !== undefined && { taxBips }),

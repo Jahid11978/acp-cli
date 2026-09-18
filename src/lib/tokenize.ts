@@ -15,7 +15,6 @@ import {
 import type {
   AgentApi,
   OccupyLaunchOptions,
-  OccupyQuoteToken,
   OccupyPrepareLaunchResponse,
   PrepareLaunchResponse,
   SolanaPrepareLaunchResponse,
@@ -43,8 +42,6 @@ export interface TokenizeParams {
 export interface EvmTokenizeParams extends TokenizeParams {
   walletAddress: string;
   launchOptions?: OccupyLaunchOptions;
-  /** Resolved Occupy quote asset, when one was named. */
-  quoteToken?: OccupyQuoteToken;
 }
 
 export interface TokenizeResult {
@@ -90,17 +87,11 @@ export const QUOTE_TOKEN_DOCS_URL =
   "https://os.virtuals.io/agent-identity/token/overview#occupy-quote-assets";
 
 /**
- * Turn `--quote-token` into the full record.
- *
- * The decimals are the reason this is not just a passthrough: the tokenized
- * equities are 8-decimal while wtFGI is 18, so a pre-buy converted against the
- * wrong one is off by orders of magnitude. They come off the token itself,
- * which is authoritative and costs one call on any RPC.
+ * Validate `--quote-token`. Pure: the address is passed straight through, and
+ * whether the asset may be launched against is decided on-chain by
+ * `assetConfigs(address)` when the launch is prepared.
  */
-export async function resolveQuoteToken(
-  chainId: number,
-  quoteToken: string
-): Promise<OccupyQuoteToken> {
+export function parseQuoteTokenAddress(quoteToken: string): `0x${string}` {
   const wanted = quoteToken.trim();
   if (!isAddress(wanted)) {
     throw new CliError(
@@ -109,30 +100,42 @@ export async function resolveQuoteToken(
       `A ticker cannot be resolved to an address without enumerating the allow-list, which is not something the chain supports cheaply. Look the asset up at ${QUOTE_TOKEN_DOCS_URL} and pass its address.`
     );
   }
+  return getAddress(wanted);
+}
 
-  const address = getAddress(wanted);
+/**
+ * The quote asset's decimals, read off the token.
+ *
+ * Only called when there is a pre-buy, because that is the only thing that
+ * needs them: `--prebuy 5` is converted with `parseUnits(amount, decimals)`,
+ * and the allow-list is not uniform — the tokenized equities are 8-decimal
+ * while wtFGI is 18, so an assumed 18 against an 8-decimal asset overspends by
+ * a factor of 10^10.
+ *
+ * Read rather than taken from the published list on purpose. The list is a
+ * hand-maintained doc and this is a funds-moving conversion, so the token
+ * itself is the authority. Unlike the enumeration this replaced, it is a single
+ * `eth_call` — no log range, no archive depth, no RPC that refuses it.
+ */
+export async function readQuoteTokenDecimals(
+  chainId: number,
+  address: `0x${string}`
+): Promise<number> {
   const provider = await getEvmProvider(chainId);
-  const read = <T>(functionName: "symbol" | "name" | "decimals") =>
-    provider.readContract(chainId, {
+  try {
+    const decimals = (await provider.readContract(chainId, {
       abi: erc20Abi,
       address,
-      functionName,
-    }) as Promise<T>;
-
-  try {
-    const [symbol, name, decimals] = await Promise.all([
-      read<string>("symbol"),
-      read<string>("name"),
-      read<number>("decimals"),
-    ]);
-    return { address, symbol, name, decimals: Number(decimals) };
+      functionName: "decimals",
+    })) as number;
+    return Number(decimals);
   } catch (err) {
     throw new CliError(
-      `Could not read ERC-20 metadata for ${address} on chain ${chainId}: ${
+      `Could not read decimals for ${address} on chain ${chainId}: ${
         err instanceof Error ? err.message : String(err)
       }`,
       "MISSING_QUOTE_TOKEN",
-      `Check the address is an ERC-20 on this chain. The allow-listed quote assets are published at ${QUOTE_TOKEN_DOCS_URL}.`
+      `A pre-buy is denominated in the quote asset, so its decimals have to be known before spending. Check the address is an ERC-20 on this chain — the allow-listed assets are published at ${QUOTE_TOKEN_DOCS_URL}.`
     );
   }
 }
@@ -393,7 +396,6 @@ async function launchOnOccupy(
     symbol: string;
     prebuyBaseUnit: bigint;
     walletAddress: string;
-    quoteToken?: OccupyQuoteToken;
     json?: boolean;
     onProgress?: (message: string) => void;
   }
@@ -403,7 +405,6 @@ async function launchOnOccupy(
     symbol,
     prebuyBaseUnit,
     walletAddress,
-    quoteToken,
     json,
     onProgress,
   } = params;
@@ -426,12 +427,12 @@ async function launchOnOccupy(
         contracts.quoteToken,
         walletAddress,
         prebuyBaseUnit.toString(),
-        quoteToken?.symbol ?? "quote token"
+        "quote token"
       );
       if (!json) {
         console.log(
           `Pre-buying $${symbol} with ${formatUnits(prebuyBaseUnit, decimals)} ${
-            quoteToken?.symbol ?? contracts.quoteToken
+            contracts.quoteToken
           }`
         );
       }
@@ -471,7 +472,6 @@ export async function tokenizeOnEvm(
     prebuyVirtualBaseUnit,
     walletAddress,
     launchOptions,
-    quoteToken,
     onProgress,
   } = params;
 
@@ -504,7 +504,6 @@ export async function tokenizeOnEvm(
       symbol,
       prebuyBaseUnit: prebuyVirtualBaseUnit,
       walletAddress,
-      quoteToken,
       json,
       onProgress,
     });

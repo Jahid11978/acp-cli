@@ -1509,14 +1509,6 @@ export class AgentApi {
 }
 
 /** Options only the Occupy launchpad understands. */
-/** An asset an Occupy curve can be priced against. */
-export interface OccupyQuoteToken {
-  address: string;
-  symbol: string;
-  name: string;
-  decimals: number;
-}
-
 export interface OccupyLaunchOptions {
   launchpad?: "VIRTUALS" | "OCCUPY";
   /** Token name on Occupy. Defaults to the agent's name. */
