@@ -1674,22 +1674,28 @@ export function registerAgentCommands(program: Command): void {
         return;
       }
 
-      // Step 2b: Ensure agent has not already been tokenized
+      // Step 2b: Note an existing token, but do not refuse.
+      //
+      // This used to hard-block on any chain row carrying a tokenAddress, on
+      // the rule that an agent is tokenized once. That predates the second
+      // launchpad: an agent can hold a Virtuals token and launch on Occupy as
+      // well, and nothing server-side enforces the old rule — it was a CLI
+      // policy with no backend counterpart. `chains[]` has no launchpad field
+      // either, so the check could not tell which venue an existing token came
+      // from and refused both.
+      //
+      // Still worth saying out loud, since a launch is irreversible and a
+      // duplicate is usually a mistake rather than an intent.
       const existingToken = selected.chains?.find((c) => c.tokenAddress);
-      if (existingToken) {
-        outputError(
-          json,
-          new CliError(
-            `Agent ${
-              selected.name
-            } is already tokenized on chain ${formatChainId(
+      if (existingToken && !json) {
+        console.log(
+          c.yellow(
+            `\nNote: ${selected.name} already has a token on ${formatChainId(
               existingToken.chainId,
-            )}.`,
-            "ALREADY_TOKENIZED",
-            "Each agent can only be tokenized once on a single chain.",
+            )}. ` +
+              `Launching again creates an additional, separate token.`,
           ),
         );
-        return;
       }
 
       // Step 3: Resolve chain options from the EVM & Solana provider
