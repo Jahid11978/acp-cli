@@ -92,7 +92,7 @@ Occupy runs on EVM chains only; Solana launches go through the Virtuals launchpa
 | `--name <name>` | the agent's name | Token name on-chain. Occupy names the token independently of the agent |
 | `--quote-token <address>` | **required, no default** | Address of the asset the curve is priced against. Listed at [EconomyOS](https://os.virtuals.io/agent-identity/token/overview#occupy-quote-assets) |
 | `--pool-fee <fee>` | `10000` | Uniswap v4 pool fee in hundredths of a bip; on-chain bounds are 10000 (1%) – 30000 (3%) |
-| `--tax-bips <bips>` | `100` | Trading tax, in bips |
+| `--tax-bips <bips>` | `100` | Trading tax, in bips (100 = 1%). Accepted range `0`–`10000` (0%–100%) |
 | `--no-thicken-liquidity` | thickening on | Disables liquidity thickening |
 | `--anti-sniper <0\|1>` | `1` | Occupy offers only off or 60 seconds |
 | `--prebuy <amount>` | none | In **quote-token** units, not VIRTUAL. Requires `--quote-token` |

@@ -254,6 +254,26 @@ its address, pass it to `--quote-token`. WETH, USDC and VIRTUAL are not
 allow-listed, and decimals are not uniform (the share tokens are 8, `wtFGI` is
 18), so don't assume either.
 
+Occupy-only flags:
+
+| Flag | Default | What it does |
+| --- | --- | --- |
+| `--quote-token <address>` | **required** | Address of the asset the curve is priced against. No default — it decides which stock the token trades against. Addresses at [EconomyOS](https://os.virtuals.io/agent-identity/token/overview#occupy-quote-assets) |
+| `--name <name>` | the agent's name | Token name on-chain. Occupy names the token independently of the agent; rejected on the Virtuals launchpad |
+| `--pool-fee <fee>` | `10000` | Uniswap v4 swap fee in hundredths of a bip. On-chain bounds `10000`–`30000` (1%–3%). Paid on every trade, permanently |
+| `--tax-bips <bips>` | `100` | Trading tax in bips (100 = 1%), separate from the pool fee. Accepts `0`–`10000` (0%–100%) |
+| `--no-thicken-liquidity` | thickening **on** | Turns off liquidity thickening. Thickening concentrates launch liquidity to soften early price impact, so disabling it makes the opening price move more per trade |
+
+Shared flags behave differently here:
+
+| Flag | On Occupy |
+| --- | --- |
+| `--anti-sniper <type>` | Only `0` (none) or `1` (60s). `2` (98min) is Virtuals-only |
+| `--prebuy <amount>` | Denominated in **`--quote-token` units, not VIRTUAL** — `--prebuy 5` is 5 units of the quote asset. Requires `--quote-token` |
+
+`--acf`, `--60-days`, `--airdrop-percent` and `--robotics` are Virtuals-only and
+are **rejected** here rather than silently ignored.
+
 See [docs/tokenization.md](docs/tokenization.md) for prerequisites, anti-sniper, pre-buy, ACF, 60 Days Experiment, and airdrop details.
 
 ### Chain Info
