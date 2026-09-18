@@ -1,4 +1,11 @@
-import { erc20Abi, formatEther, formatUnits, parseUnits } from "viem";
+import {
+  erc20Abi,
+  formatEther,
+  formatUnits,
+  getAddress,
+  isAddress,
+  parseUnits,
+} from "viem";
 import { createAgentFromConfig } from "./agentFactory";
 import {
   EvmAcpClient,
@@ -73,30 +80,61 @@ function getEvmProvider(chainId: number) {
 }
 
 /**
- * Turn `--quote-token` (a symbol like NVDAc, or an address) into the full
- * record. The decimals matter: the tokenized equities are 8-decimal while
- * other allow-listed assets are 18, so a pre-buy converted against the wrong
- * one is off by orders of magnitude.
+ * Where the Occupy allow-list is published. `AssetConfig` has a point lookup
+ * and no enumeration, so the set of allow-listed assets can only be recovered
+ * by scanning contract logs — an archive workload public RPCs refuse. The list
+ * is eleven curated assets that change rarely, so it is documented instead of
+ * derived, and `--quote-token` takes the address from it.
+ */
+export const QUOTE_TOKEN_DOCS_URL =
+  "https://os.virtuals.io/agent-identity/token/overview#occupy-quote-assets";
+
+/**
+ * Turn `--quote-token` into the full record.
+ *
+ * The decimals are the reason this is not just a passthrough: the tokenized
+ * equities are 8-decimal while wtFGI is 18, so a pre-buy converted against the
+ * wrong one is off by orders of magnitude. They come off the token itself,
+ * which is authoritative and costs one call on any RPC.
  */
 export async function resolveQuoteToken(
-  agentApi: AgentApi,
   chainId: number,
   quoteToken: string
 ): Promise<OccupyQuoteToken> {
-  const tokens = await agentApi.listOccupyQuoteTokens(chainId);
-  const wanted = quoteToken.trim().toLowerCase();
-  const match = tokens.find(
-    (t) =>
-      t.symbol.toLowerCase() === wanted || t.address.toLowerCase() === wanted
-  );
-  if (!match) {
+  const wanted = quoteToken.trim();
+  if (!isAddress(wanted)) {
     throw new CliError(
-      `Unknown quote token "${quoteToken}" on chain ${chainId}.`,
+      `--quote-token must be a contract address, got "${quoteToken}".`,
       "MISSING_QUOTE_TOKEN",
-      `Available: ${tokens.map((t) => `${t.symbol} (${t.name})`).join(", ")}`
+      `A ticker cannot be resolved to an address without enumerating the allow-list, which is not something the chain supports cheaply. Look the asset up at ${QUOTE_TOKEN_DOCS_URL} and pass its address.`
     );
   }
-  return match;
+
+  const address = getAddress(wanted);
+  const provider = await getEvmProvider(chainId);
+  const read = <T>(functionName: "symbol" | "name" | "decimals") =>
+    provider.readContract(chainId, {
+      abi: erc20Abi,
+      address,
+      functionName,
+    }) as Promise<T>;
+
+  try {
+    const [symbol, name, decimals] = await Promise.all([
+      read<string>("symbol"),
+      read<string>("name"),
+      read<number>("decimals"),
+    ]);
+    return { address, symbol, name, decimals: Number(decimals) };
+  } catch (err) {
+    throw new CliError(
+      `Could not read ERC-20 metadata for ${address} on chain ${chainId}: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+      "MISSING_QUOTE_TOKEN",
+      `Check the address is an ERC-20 on this chain. The allow-listed quote assets are published at ${QUOTE_TOKEN_DOCS_URL}.`
+    );
+  }
 }
 
 /**

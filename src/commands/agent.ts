@@ -56,6 +56,7 @@ import {
   convertPrebuyVirtual,
   convertPrebuyWithDecimals,
   resolveQuoteToken,
+  QUOTE_TOKEN_DOCS_URL,
 } from "../lib/tokenize";
 import * as viemChains from "viem/chains";
 import { formatChainId, solanaChainId, isSolanaChainId } from "../lib/chains";
@@ -1427,49 +1428,6 @@ export function registerAgentCommands(program: Command): void {
     });
 
   agent
-    .command("quote-tokens")
-    .description(
-      "List the assets an Occupy launch can be priced against (use one with `tokenize --launchpad occupy --quote-token`)",
-    )
-    .option("--chain-id <id>", "Chain ID (default: 8453, Base)")
-    .action(async (opts, cmd) => {
-      const { agentApi } = await getClient();
-      const json = isJson(cmd);
-      const chainId = Number(opts.chainId ?? 8453);
-
-      let tokens;
-      try {
-        tokens = await agentApi.listOccupyQuoteTokens(chainId);
-      } catch (err) {
-        outputError(
-          json,
-          `Failed to list quote tokens: ${
-            err instanceof Error ? err.message : String(err)
-          }`,
-        );
-        return;
-      }
-
-      if (json) {
-        outputResult(json, { chainId, quoteTokens: tokens });
-        return;
-      }
-
-      if (tokens.length === 0) {
-        console.log(`No quote tokens available on chain ${chainId}.`);
-        return;
-      }
-
-      console.log(`\n${c.bold(`Occupy quote assets [${formatChainId(chainId)}]`)}`);
-      printTable(
-        tokens.map((t) => [
-          t.symbol,
-          `${t.name} — ${t.address} (${t.decimals} decimals)`,
-        ]),
-      );
-    });
-
-  agent
     .command("tokenize")
     .description("Tokenize the active agent on a blockchain")
     .option("--chain-id <id>", "Chain ID to tokenize on")
@@ -1505,7 +1463,7 @@ export function registerAgentCommands(program: Command): void {
     )
     .option(
       "--quote-token <address>",
-      "Occupy only, REQUIRED: the asset the curve is priced against — a symbol (e.g. NVDAc, TSLAc, MSFTc) or an address. Run `acp agent quote-tokens` to list them",
+      "Occupy only, REQUIRED: address of the asset the curve is priced against. Addresses are listed at https://os.virtuals.io/agent-identity/token/overview#occupy-quote-assets",
     )
     .option(
       "--pool-fee <fee>",
@@ -1610,23 +1568,12 @@ export function registerAgentCommands(program: Command): void {
 
       const willPickQuoteToken = Boolean(opts.configure) && !json;
       if (isOccupy && !opts.quoteToken && !willPickQuoteToken) {
-        let choices = "run `acp agent quote-tokens` to list them";
-        try {
-          const tokens = await agentApi.listOccupyQuoteTokens(
-            Number(opts.chainId ?? 8453),
-          );
-          if (tokens.length) {
-            choices = tokens.map((t) => `${t.symbol} (${t.name})`).join(", ");
-          }
-        } catch {
-          // Listing is a convenience; the flag is required either way.
-        }
         outputError(
           json,
           new CliError(
             "--quote-token is required on the Occupy launchpad.",
             "MISSING_QUOTE_TOKEN",
-            `It names the asset your token is priced against, and there is no default — it decides what the token trades against. Available: ${choices}`,
+            `It names the asset your token is priced against, and there is no default — it decides what the token trades against. Pass the asset's address; they are listed at ${QUOTE_TOKEN_DOCS_URL}.`,
           ),
         );
         return;
@@ -1840,38 +1787,40 @@ export function registerAgentCommands(program: Command): void {
       // --configure offers the allow-list rather than making the user find an
       // address somewhere else.
       if (isOccupy && !quoteTokenInput && willPickQuoteToken) {
-        let available;
-        try {
-          available = await agentApi.listOccupyQuoteTokens(selectedChain.id);
-        } catch (err) {
-          outputError(
-            json,
-            `Failed to list quote tokens: ${
-              err instanceof Error ? err.message : String(err)
-            }`,
-          );
-          return;
-        }
-        if (available.length === 0) {
-          outputError(
-            json,
-            `No quote tokens are available on chain ${selectedChain.id}.`,
-          );
-          return;
-        }
-        const picked = await selectOption(
-          "\nChoose the asset your token's curve is priced against:",
-          available,
-          (t) => `${t.symbol} — ${t.name} (${t.decimals} decimals)`,
+        // No menu to offer: the allow-list is published rather than fetched, so
+        // the prompt sends the user there and takes the address back.
+        console.log(
+          `\nThe asset your token's curve is priced against.` +
+            `\nAllow-listed assets, with addresses and decimals: ${QUOTE_TOKEN_DOCS_URL}`,
         );
-        quoteTokenInput = picked.symbol;
+        const rl = readline.createInterface({
+          input: process.stdin,
+          output: process.stdout,
+        });
+        try {
+          quoteTokenInput = (
+            await prompt(rl, "Enter the quote asset's contract address: ")
+          ).trim();
+        } finally {
+          rl.close();
+        }
+        if (!quoteTokenInput) {
+          outputError(
+            json,
+            new CliError(
+              "A quote asset is required on the Occupy launchpad.",
+              "MISSING_QUOTE_TOKEN",
+              `It decides what your token trades against, and there is no default. Addresses are listed at ${QUOTE_TOKEN_DOCS_URL}.`,
+            ),
+          );
+          return;
+        }
       }
 
       let resolvedQuoteToken: OccupyQuoteToken | undefined;
       if (isOccupy && quoteTokenInput) {
         try {
           resolvedQuoteToken = await resolveQuoteToken(
-            agentApi,
             selectedChain.id,
             quoteTokenInput,
           );

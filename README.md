@@ -230,6 +230,30 @@ acp agent tokenize --chain-id 8453 --symbol MYTOKEN --robotics
 acp agent tokenize --configure
 ```
 
+#### Occupy launchpad
+
+`--launchpad occupy` launches on Occupy instead: one transaction, no launch fee,
+and the curve priced against a tokenized equity rather than VIRTUAL.
+
+```bash
+# Priced against NVIDIA — the address comes from the published allow-list
+acp agent tokenize --launchpad occupy --chain-id 8453 --symbol MYTOKEN \
+  --quote-token 0xb20000000000000000000078ee7ce2fE4908108C
+```
+
+**`--quote-token` takes an address, not a ticker, and the CLI has no command
+that lists the choices.** `AssetConfig` exposes a point lookup and no
+enumeration, so listing the allow-list means an archive-depth log scan that
+public RPCs refuse — it is published instead of fetched. Read it here:
+
+> **Occupy quote assets — <https://os.virtuals.io/agent-identity/token/overview#occupy-quote-assets>**
+> Symbol, name, address and decimals for every allow-listed asset on Base.
+
+Agents should treat that page as the source of truth: look up the asset, copy
+its address, pass it to `--quote-token`. WETH, USDC and VIRTUAL are not
+allow-listed, and decimals are not uniform (the share tokens are 8, `wtFGI` is
+18), so don't assume either.
+
 See [docs/tokenization.md](docs/tokenization.md) for prerequisites, anti-sniper, pre-buy, ACF, 60 Days Experiment, and airdrop details.
 
 ### Chain Info

@@ -1478,15 +1478,6 @@ export class AgentApi {
     return res.data;
   }
 
-  /** The assets an Occupy launch can be priced against on this chain. */
-  async listOccupyQuoteTokens(chainId: number): Promise<OccupyQuoteToken[]> {
-    const res = await this.client.get<{ data: OccupyQuoteToken[] }>(
-      `/agents/launchpads/occupy/quote-tokens`,
-      { chainId: chainId.toString() }
-    );
-    return res.data;
-  }
-
   async getActiveSubscription(
     clientAgentId: string,
     providerWalletAddress: string,
@@ -1531,8 +1522,8 @@ export interface OccupyLaunchOptions {
   /** Token name on Occupy. Defaults to the agent's name. */
   name?: string;
   /**
-   * Asset the curve is priced against — a symbol (`NVDAc`) or an address.
-   * Required on Occupy.
+   * Address of the asset the curve is priced against. Required on Occupy, and
+   * an address rather than a ticker: see QUOTE_TOKEN_DOCS_URL.
    */
   quoteToken?: string;
   /** Uniswap v4 pool fee in hundredths of a bip (10000 = 1%). */
