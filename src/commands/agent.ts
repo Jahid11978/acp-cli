@@ -54,6 +54,7 @@ import {
   tokenizeOnEvm,
   convertPrebuyVirtual,
   convertPrebuyWithDecimals,
+  parsePoolFee,
   parseQuoteTokenAddress,
   readQuoteTokenDecimals,
   QUOTE_TOKEN_DOCS_URL,
@@ -1467,7 +1468,7 @@ export function registerAgentCommands(program: Command): void {
     )
     .option(
       "--pool-fee <fee>",
-      "Occupy only: the trading fee every buy and sell of your token pays, in hundredths of a bip — 10000 (1%, default) to 30000 (3%). Permanent",
+      "Occupy only: the trading fee every buy and sell of your token pays. Give a percentage (1, 1.5%, 3) or the raw unit (10000–30000; 1% = 10000). Default 1%. Permanent",
     )
     .option(
       "--take-fees",
@@ -1639,15 +1640,24 @@ export function registerAgentCommands(program: Command): void {
 
       if (isOccupy) {
         if (opts.poolFee !== undefined) {
-          const parsed = Number(opts.poolFee);
-          if (!Number.isInteger(parsed) || parsed < 10000 || parsed > 30000) {
+          const parsed = parsePoolFee(opts.poolFee);
+          if (parsed === null) {
             outputError(
               json,
-              `Invalid --pool-fee value: ${opts.poolFee}. Must be an integer between 10000 (1%) and 30000 (3%).`,
+              new CliError(
+                `Invalid --pool-fee value: ${opts.poolFee}.`,
+                "UNSUPPORTED_LAUNCH_OPTION",
+                "Give a percentage between 1 and 3 (`1`, `1.5%`, `3`) or the raw contract unit between 10000 and 30000 — 1% = 10000, 2% = 20000, 3% = 30000. Occupy allows 1%–3%.",
+              ),
             );
             return;
           }
           poolFee = parsed;
+          if (!json && String(opts.poolFee).trim() !== String(parsed)) {
+            console.log(
+              `Trading fee: ${parsed / 10000}% (--pool-fee ${parsed})`,
+            );
+          }
         }
       }
 

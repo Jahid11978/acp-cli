@@ -91,7 +91,7 @@ Occupy runs on EVM chains only; Solana launches go through the Virtuals launchpa
 | --- | --- | --- |
 | `--name <name>` | the agent's name | Token name on-chain. Occupy names the token independently of the agent |
 | `--quote-token <address>` | **required, no default** | Address of the asset the curve is priced against. Listed at [EconomyOS](https://os.virtuals.io/agent-identity/token/overview#occupy-quote-assets) |
-| `--pool-fee <fee>` | `10000` (1%) | **The trading fee every buy and sell pays**, in hundredths of a bip; `10000`–`30000` (1%–3%) |
+| `--pool-fee <fee>` | `1%` | **The trading fee every buy and sell pays.** Percentage (`1`, `1.5%`, `3`) or raw unit (`10000`–`30000`; 1% = 10000) |
 | `--take-fees` | **off** | Pay your 30% creator share of that fee to the agent wallet. Off leaves it in the pool |
 | `--no-thicken-liquidity` | — | Alias for `--take-fees` — the on-chain name for the same switch |
 | `--anti-sniper <0\|1>` | `1` | Occupy offers only off or 60 seconds |
@@ -120,6 +120,20 @@ acp agent tokenize --launchpad occupy --chain-id 8453 --symbol MYTOKEN \
 acp agent tokenize --launchpad occupy --chain-id 8453 --symbol MYTOKEN \
   --quote-token 0xb20000000000000000000078ee7ce2fE4908108C --prebuy 5
 ```
+
+`--pool-fee` accepts either form — a percentage, or the raw contract unit
+(hundredths of a bip). They cannot be confused, because every valid raw value is
+at least 10000 and every valid percentage is at most 3:
+
+| You want | Pass either | Not |
+| --- | --- | --- |
+| 1% (default) | `1`, `1%`, `10000` | `100`, `1000` |
+| 1.5% | `1.5`, `1.5%`, `15000` | `150` |
+| 2% | `2`, `2%`, `20000` | `200` |
+| 3% (max) | `3`, `3%`, `30000` | `300` |
+
+Occupy allows 1%–3% and nothing outside it. Anything else is rejected with both
+forms spelled out rather than silently coerced.
 
 #### Who gets the trading fee
 

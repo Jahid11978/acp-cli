@@ -140,6 +140,38 @@ export async function readQuoteTokenDecimals(
   }
 }
 
+/** Occupy's on-chain bounds for the trading fee, in hundredths of a bip. */
+export const MIN_POOL_FEE = 10_000;
+export const MAX_POOL_FEE = 30_000;
+
+/**
+ * Parse `--pool-fee`, accepting either the percentage a human reasons in or the
+ * hundredths-of-a-bip the contract takes.
+ *
+ * The raw unit is the problem: 1% is `10000`, so someone thinking in percent
+ * writes `1`, someone thinking in bips writes `100`, and both are rejected by a
+ * floor of `10000`. The two forms cannot collide — every valid raw value is
+ * >= 10000 and every valid percentage is <= 3 — so both are accepted rather
+ * than making the caller guess and retry.
+ *
+ * Returns null for anything outside both forms, so the caller can name them.
+ */
+export function parsePoolFee(raw: string | number): number | null {
+  const text = String(raw).trim().replace(/%$/, "");
+  if (!/^\d*\.?\d+$/.test(text)) return null;
+  const value = Number(text);
+  if (!Number.isFinite(value)) return null;
+
+  if (value >= MIN_POOL_FEE && value <= MAX_POOL_FEE) {
+    return Number.isInteger(value) ? value : null;
+  }
+  if (value >= 1 && value <= 3) {
+    const units = Math.round(value * 10_000);
+    return units >= MIN_POOL_FEE && units <= MAX_POOL_FEE ? units : null;
+  }
+  return null;
+}
+
 /**
  * Occupy quotes its curve in an arbitrary asset, so a pre-buy is denominated in
  * that token's units rather than VIRTUAL's 18. Read the decimals rather than

@@ -260,10 +260,24 @@ Occupy-only flags:
 | --- | --- | --- |
 | `--quote-token <address>` | **required** | Address of the asset the curve is priced against. No default — it decides which stock the token trades against. Addresses at [EconomyOS](https://os.virtuals.io/agent-identity/token/overview#occupy-quote-assets) |
 | `--name <name>` | the agent's name | Token name on-chain. Occupy names the token independently of the agent; rejected on the Virtuals launchpad |
-| `--pool-fee <fee>` | `10000` (1%) | **The trading fee every buy and sell of your token pays**, in hundredths of a bip. `10000`–`30000` (1%–3%) on-chain. Permanent |
+| `--pool-fee <fee>` | `1%` | **The trading fee every buy and sell of your token pays.** Takes a percentage (`1`, `1.5%`, `3`) or the raw unit (`10000`–`30000`; 1% = 10000). Permanent |
 | `--take-fees` | **off** | Pay your 30% creator share of that fee out to the agent wallet. Off leaves it in the pool as permanent liquidity |
 | `--no-thicken-liquidity` | — | Alias for `--take-fees`; `thickenLiquidity` is the on-chain name |
 
+
+`--pool-fee` accepts either form — a percentage, or the raw contract unit
+(hundredths of a bip). They cannot be confused, because every valid raw value is
+at least 10000 and every valid percentage is at most 3:
+
+| You want | Pass either | Not |
+| --- | --- | --- |
+| 1% (default) | `1`, `1%`, `10000` | `100`, `1000` |
+| 1.5% | `1.5`, `1.5%`, `15000` | `150` |
+| 2% | `2`, `2%`, `20000` | `200` |
+| 3% (max) | `3`, `3%`, `30000` | `300` |
+
+Occupy allows 1%–3% and nothing outside it. Anything else is rejected with both
+forms spelled out rather than silently coerced.
 
 #### Who gets the trading fee
 
