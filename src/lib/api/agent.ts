@@ -1408,9 +1408,6 @@ export class AgentApi {
     if (launchOptions?.poolFee !== undefined) {
       payload.poolFee = launchOptions.poolFee;
     }
-    if (launchOptions?.taxBips !== undefined) {
-      payload.taxBips = launchOptions.taxBips;
-    }
     if (launchOptions?.thickenLiquidity !== undefined) {
       payload.thickenLiquidity = launchOptions.thickenLiquidity;
     }
@@ -1520,7 +1517,12 @@ export interface OccupyLaunchOptions {
   quoteToken?: string;
   /** Uniswap v4 pool fee in hundredths of a bip (10000 = 1%). */
   poolFee?: number;
-  taxBips?: number;
+  /**
+   * Whether the creator's 30% share of the trading fee stays in the pool.
+   * `true` (the launchpad default) leaves it there as permanent liquidity;
+   * `false` pays it out to the agent wallet — Occupy's own UI presents this
+   * inverted, as a "take fees" switch, and so does `--take-fees`.
+   */
   thickenLiquidity?: boolean;
 }
 

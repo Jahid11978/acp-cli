@@ -91,9 +91,9 @@ Occupy runs on EVM chains only; Solana launches go through the Virtuals launchpa
 | --- | --- | --- |
 | `--name <name>` | the agent's name | Token name on-chain. Occupy names the token independently of the agent |
 | `--quote-token <address>` | **required, no default** | Address of the asset the curve is priced against. Listed at [EconomyOS](https://os.virtuals.io/agent-identity/token/overview#occupy-quote-assets) |
-| `--pool-fee <fee>` | `10000` | Uniswap v4 pool fee in hundredths of a bip; on-chain bounds are 10000 (1%) – 30000 (3%) |
-| `--tax-bips <bips>` | `100` | Recorded on the Occupy draft, **not in the launch transaction** — the deployed Base `Bonding.launch` takes no tax parameter, so the CLI cannot enforce this and you should not assume it applies. Occupy's own model treats buy/sell tax as a single value of 100–300 bips |
-| `--no-thicken-liquidity` | thickening on | Disables liquidity thickening |
+| `--pool-fee <fee>` | `10000` (1%) | **The trading fee every buy and sell pays**, in hundredths of a bip; `10000`–`30000` (1%–3%) |
+| `--take-fees` | **off** | Pay your 30% creator share of that fee to the agent wallet. Off leaves it in the pool |
+| `--no-thicken-liquidity` | — | Alias for `--take-fees` — the on-chain name for the same switch |
 | `--anti-sniper <0\|1>` | `1` | Occupy offers only off or 60 seconds |
 | `--prebuy <amount>` | none | In **quote-token** units, not VIRTUAL. Requires `--quote-token` |
 
@@ -121,11 +121,43 @@ acp agent tokenize --launchpad occupy --chain-id 8453 --symbol MYTOKEN \
   --quote-token 0xb20000000000000000000078ee7ce2fE4908108C --prebuy 5
 ```
 
+#### Who gets the trading fee
+
+`--pool-fee` sets the fee **every buy and sell of your token pays**, forever —
+`10000` = 1% (default), up to `30000` = 3%. It is the only trading cost the
+launch actually sets.
+
+That fee is then split three ways by the launchpad, globally — you don't choose
+the split, and it is not in the launch call. Read live from `AssetConfig` on
+Base:
+
+| Share | Bips | Goes to |
+| --- | --- | --- |
+| `creatorBips` | 3000 | **30% — you, the creator** |
+| `taxVaultBips` | 4000 | 40% — the quote asset's tax vault |
+| `protocolBips` | 3000 | 30% — the protocol |
+
+**`--take-fees` decides what happens to your 30%.** It is **off by default**,
+and off means your cut is left in the pool as permanent liquidity rather than
+paid out. Pass `--take-fees` to have it paid to the agent wallet as it accrues.
+
+```bash
+# Default: your 30% cut stays in the pool, deepening liquidity forever
+acp agent tokenize --launchpad occupy --symbol MYTOKEN --quote-token 0xb200…108C
+
+# Take the cut instead — paid to the agent wallet as trades happen
+acp agent tokenize --launchpad occupy --symbol MYTOKEN --quote-token 0xb200…108C --take-fees
+```
+
+`--no-thicken-liquidity` is the same switch under its on-chain name
+(`thickenLiquidity`), kept because that is what the contract and the API call
+it. Occupy's own UI presents it the way `--take-fees` does.
+
 ## CLI usage
 
 ```
 acp agent tokenize [--chain-id <id>] [--symbol <symbol>] [--anti-sniper <0|1|2>] [--prebuy <virtuals>] [--acf] [--60-days] [--airdrop-percent <percent>] [--robotics] [--configure]
-acp agent tokenize --launchpad occupy --quote-token <address> [--chain-id <id>] [--symbol <symbol>] [--name <name>] [--pool-fee <fee>] [--tax-bips <bips>] [--no-thicken-liquidity] [--anti-sniper <0|1|2>] [--prebuy <amount>]
+acp agent tokenize --launchpad occupy --quote-token <address> [--chain-id <id>] [--symbol <symbol>] [--name <name>] [--pool-fee <fee>] [--take-fees] [--anti-sniper <0|1|2>] [--prebuy <amount>]
 ```
 
 - `--chain-id <id>` — chain to launch on. Restricted to what the provider supports.

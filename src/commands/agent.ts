@@ -1467,12 +1467,15 @@ export function registerAgentCommands(program: Command): void {
     )
     .option(
       "--pool-fee <fee>",
-      "Occupy only: Uniswap v4 pool fee in hundredths of a bip, 10000–30000 (default 10000 = 1%)",
+      "Occupy only: the trading fee every buy and sell of your token pays, in hundredths of a bip — 10000 (1%, default) to 30000 (3%). Permanent",
     )
-    .option("--tax-bips <bips>", "Occupy only: trading tax in bips (default 100)")
+    .option(
+      "--take-fees",
+      "Occupy only: pay your 30% creator share of the trading fee out to the agent wallet as it accrues. Off by default, which leaves it in the pool as permanent liquidity",
+    )
     .option(
       "--no-thicken-liquidity",
-      "Occupy only: disable liquidity thickening (on by default)",
+      "Occupy only: alias for --take-fees (this is the on-chain name for the same switch)",
     )
     .option("--configure", "Show advanced launch configuration options")
     .action(async (opts, cmd) => {
@@ -1548,8 +1551,7 @@ export function registerAgentCommands(program: Command): void {
           opts.name !== undefined && "--name",
           opts.quoteToken !== undefined && "--quote-token",
           opts.poolFee !== undefined && "--pool-fee",
-          opts.taxBips !== undefined && "--tax-bips",
-          opts.thickenLiquidity === false && "--no-thicken-liquidity",
+          (opts.takeFees || opts.thickenLiquidity === false) && "--take-fees",
         ].filter(Boolean) as string[];
         if (occupyOnly.length > 0) {
           outputError(
@@ -1634,7 +1636,7 @@ export function registerAgentCommands(program: Command): void {
       // AssetConfig to [MIN_POOL_FEE, MAX_POOL_FEE]; catching it here beats a
       // revert after the draft already exists upstream.
       let poolFee: number | undefined;
-      let taxBips: number | undefined;
+
       if (isOccupy) {
         if (opts.poolFee !== undefined) {
           const parsed = Number(opts.poolFee);
@@ -1646,17 +1648,6 @@ export function registerAgentCommands(program: Command): void {
             return;
           }
           poolFee = parsed;
-        }
-        if (opts.taxBips !== undefined) {
-          const parsed = Number(opts.taxBips);
-          if (!Number.isInteger(parsed) || parsed < 0 || parsed > 10000) {
-            outputError(
-              json,
-              `Invalid --tax-bips value: ${opts.taxBips}. Must be an integer between 0 and 10000.`,
-            );
-            return;
-          }
-          taxBips = parsed;
         }
       }
 
@@ -2096,8 +2087,12 @@ export function registerAgentCommands(program: Command): void {
                 quoteToken: quoteTokenAddress ?? quoteTokenInput,
               }),
               ...(poolFee !== undefined && { poolFee }),
-              ...(taxBips !== undefined && { taxBips }),
-              thickenLiquidity: opts.thickenLiquidity !== false,
+              // Two spellings of one switch: --take-fees reads the way the
+              // choice actually lands (the creator's cut is paid out), and
+              // --no-thicken-liquidity is the on-chain name for it.
+              thickenLiquidity: !(
+                opts.takeFees || opts.thickenLiquidity === false
+              ),
             },
           }),
         };
