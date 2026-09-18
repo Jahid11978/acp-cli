@@ -261,7 +261,7 @@ Occupy-only flags:
 | `--quote-token <address>` | **required** | Address of the asset the curve is priced against. No default — it decides which stock the token trades against. Addresses at [EconomyOS](https://os.virtuals.io/agent-identity/token/overview#occupy-quote-assets) |
 | `--name <name>` | the agent's name | Token name on-chain. Occupy names the token independently of the agent; rejected on the Virtuals launchpad |
 | `--pool-fee <fee>` | `10000` | Uniswap v4 swap fee in hundredths of a bip. On-chain bounds `10000`–`30000` (1%–3%). Paid on every trade, permanently |
-| `--tax-bips <bips>` | `100` | Trading tax in bips (100 = 1%), separate from the pool fee. Accepts `0`–`10000` (0%–100%) |
+| `--tax-bips <bips>` | `100` | Recorded on the Occupy draft, **not in the launch transaction** — the deployed Base `Bonding.launch` takes no tax parameter, so the CLI cannot enforce this and you should not assume it applies. Occupy's own model treats buy/sell tax as a single value of 100–300 bips. Unlike `--pool-fee`, it is draft metadata |
 | `--no-thicken-liquidity` | thickening **on** | Turns off liquidity thickening. Thickening concentrates launch liquidity to soften early price impact, so disabling it makes the opening price move more per trade |
 
 Shared flags behave differently here:
