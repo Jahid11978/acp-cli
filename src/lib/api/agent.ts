@@ -621,6 +621,10 @@ export interface HyperliquidBalanceSummary {
   source: "unified" | "spot_and_longs" | "unknown";
   spotUsd: string | null;
   longPositionsUsd: string | null;
+  // What the account can SPEND: free stables only, never margin held by an
+  // open position (`balanceUsd` / `spotUsd` are gross). Optional because older
+  // backends do not send it; null means it could not be worked out.
+  spendableCashUsd?: string | null;
   spotBalances: HyperliquidSpotBalance[];
   positions: HyperliquidPerpPosition[];
   asOf: number | null;

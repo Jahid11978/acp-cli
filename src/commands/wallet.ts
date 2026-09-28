@@ -201,6 +201,11 @@ function printHyperliquid(hl?: HyperliquidBalanceSummary | null): void {
   const src =
     hl.source && hl.source !== "unknown" ? ` ${c.dim(`(${hl.source})`)}` : "";
   console.log(`  ${c.bold("Account Value:")}  ${usd(hl.balanceUsd)}${src}`);
+  // The one figure here a trade or send can use — Account Value and Spot both
+  // count margin that open positions are holding.
+  if (hl.spendableCashUsd !== undefined) {
+    console.log(`  ${c.bold("Spendable:")}      ${usd(hl.spendableCashUsd)}`);
+  }
   console.log(
     `  ${c.dim("Spot:")} ${usd(hl.spotUsd)}   ${c.dim("Longs:")} ${usd(
       hl.longPositionsUsd
@@ -466,6 +471,11 @@ function renderBalances(opts: {
           hyperliquid.source
         }\thl`
       );
+      if (hyperliquid.spendableCashUsd !== undefined) {
+        console.log(
+          `HL\tspendableCash\t\t${usd(hyperliquid.spendableCashUsd)}\t\thl`
+        );
+      }
       for (const b of (hyperliquid.spotBalances ?? []).filter(hlSpotNonZero)) {
         console.log(
           `${b.coin ?? b.token ?? "—"}\t${hlNum(b.total) ?? "—"}\t${
