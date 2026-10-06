@@ -62,7 +62,7 @@
   "devDependencies": {
     "@types/node": "^22.0.0",
     "@types/qrcode-terminal": "^0.12.2",
-    "esbuild": "0.27.7",
+    "esbuild": "0.28.1",
     "tsx": "^4.19.0",
     "typescript": "^5.9.3"
   }
